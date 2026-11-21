@@ -1,7 +1,7 @@
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { rotateLog, ServerProcess } from "../src/main/server-process";
 import { serverLog } from "../src/server/log";
 
@@ -21,6 +21,10 @@ function stuckServer(log: string[], home = mkdtempSync(join(tmpdir(), "codeden-s
     log: (m) => log.push(m),
   });
 }
+
+beforeEach(() => {
+  vi.stubEnv("SHELL", join(tmpdir(), "codeden-test-missing-shell"));
+});
 
 afterEach(() => {
   vi.unstubAllEnvs();
