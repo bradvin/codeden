@@ -5,6 +5,12 @@ import type { PlatformBridge } from "./platform";
 const MAX_PENDING_CLICKS = 50;
 
 /**
+ * A window on another machine's CodeDen (`api.remote`) behaves as a normal browser where the
+ * desktop's own machine would leak in: no native folder picker (it would give the server a path
+ * on this computer, so the built-in picker browses the server's disk), no native session
+ * browser (the runner's Chromium is used) and no desktop settings (they belong to This Mac).
+ * Notifications, the badge and links still go through the app.
+ *
  * The desktop app's PlatformBridge (§13, §17), built on `window.codedenDesktop`: native
  * notifications (no permission prompt), the app icon badge, the native folder picker, links
  * in the system browser and `codeden://` navigation. Clipboard and focus use the web APIs,
@@ -30,11 +36,21 @@ export function createDesktopPlatform(api: CodedenDesktopApi, web: PlatformBridg
       notifications: true,
       badge: true,
       clipboardImages: web.capabilities.clipboardImages,
-      folderPicker: true,
-      osIntegration: true,
+      folderPicker: !api.remote,
+      osIntegration: !api.remote,
       nativeBrowser: Boolean(api.browser),
     },
     nativeBrowser: api.browser ?? null,
+    serverSwitcher: api.showServerMenu
+      ? {
+          current: () =>
+            api.info().then(
+              (info) => info.server ?? null,
+              () => null,
+            ),
+          showMenu: () => api.showServerMenu?.(),
+        }
+      : null,
     notificationPermission: () => "granted",
     requestNotificationPermission: async () => "granted",
     notify(title, opts) {
@@ -57,9 +73,10 @@ export function createDesktopPlatform(api: CodedenDesktopApi, web: PlatformBridg
     writeClipboard: (text) => web.writeClipboard(text),
     readClipboardImage: () => web.readClipboardImage(),
     isFocused: () => web.isFocused(),
-    pickFolder: (opts) => api.pickFolder(opts),
+    pickFolder: async (opts) => (api.remote ? null : api.pickFolder(opts)),
     onNavigate: (listener) => api.onNavigate(listener),
     launchAtLoginSupported() {
+      if (api.remote) return Promise.resolve(false);
       loginSupport ??= api.info().then(
         (info) => info.launchAtLoginSupported,
         () => false,

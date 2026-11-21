@@ -9,6 +9,7 @@ import { useUiStore } from "@/stores/ui";
 import { Logo } from "../logo";
 import { useIsActive } from "./nav-row";
 import { ProjectTile } from "./project-group";
+import { ServerChip } from "./server-chip";
 import { SidebarFooter } from "./sidebar-footer";
 
 function RailItem({
@@ -56,6 +57,7 @@ export function SidebarRail({ onExpand }: { onExpand?: () => void } = {}) {
       <div className="flex h-12 items-center">
         <Logo className="size-[22px]" />
       </div>
+      <ServerChip compact />
       <div className="flex flex-col items-center gap-1">
         <RailItem label="Expand sidebar · Ctrl B">
           <button type="button" onClick={toggleSidebar} aria-label="Expand sidebar">
