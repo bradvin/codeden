@@ -53,10 +53,8 @@ export function networkRoutes(ctx: NetworkRouteContext) {
       if (enabled && !network.store.passwordSet) {
         throw badRequest("Set a password before turning network access on.", "password_required");
       }
-      // Both changes land before the listener moves once.
-      if (loopbackOnly !== undefined) network.store.setLoopbackOnly(loopbackOnly);
-      if (enabled !== undefined) network.store.setEnabled(enabled);
-      await network.applyBinding();
+      // One serialized step: save both choices, then move the listener once.
+      await network.update({ enabled, loopbackOnly });
       return c.json(statusFor(c));
     })
     .post("/origins", jsonBody(AddTrustedOriginRequest), (c) => {
@@ -139,7 +137,7 @@ export function authRoutes(ctx: NetworkRouteContext) {
           "Sign-in is for other devices; this computer uses its own link.",
         );
       }
-      const gate = network.checkSignIn(client);
+      const { gate, release } = network.beginSignIn(client);
       if (!gate.allowed) {
         const seconds = Math.ceil(gate.retryAfterMs / 1000);
         return gate.reason === "locked_out"
@@ -157,12 +155,17 @@ export function authRoutes(ctx: NetworkRouteContext) {
             );
       }
       const { password } = c.req.valid("json");
-      if (!(await network.store.checkPassword(password))) {
-        network.failSignIn(client);
-        network.recordFailedSignIn(address, "wrong password", client.viaProxy);
-        return refuse(401, "invalid_password", "That password is not right.");
+      // The reservation lasts through the (slow) check and the failure it may record.
+      try {
+        if (!(await network.store.checkPassword(password))) {
+          network.failSignIn(client);
+          network.recordFailedSignIn(address, "wrong password", client.viaProxy);
+          return refuse(401, "invalid_password", "That password is not right.");
+        }
+        network.succeedSignIn(client);
+      } finally {
+        release();
       }
-      network.succeedSignIn(client);
       const { token, session } = network.store.createSession({
         label: c.req.header("user-agent") ?? "",
         address: address || null,

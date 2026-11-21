@@ -136,11 +136,11 @@ function isRepeatedUnitOf(text: string, units: ReadonlySet<string>): boolean {
 export const TRUSTED_ORIGINS_MAX = 10;
 
 const TRUSTED_ORIGIN_RE =
-  /^https:\/\/((?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)*[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)(?::(\d{1,5}))?\/?$/;
+  /^https:\/\/((?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)*[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)(?::(\d{1,5}))?$/;
 
 /**
  * Check a trusted origin (§15.1): the HTTPS address of a reverse proxy on this machine, such as
- * Tailscale Serve. Returns the normalized form (lowercase, `:443` dropped, no trailing slash)
+ * Tailscale Serve. Returns the normalized form (lowercase, `:443` dropped)
  * or the reason it is refused. Only `https://<dns name>[:port]` is accepted: no path, query,
  * fragment or credentials, no IP literals (a proxy certificate names a host), no loopback
  * names (those are already local), no port 0 or above 65535.
@@ -179,6 +179,21 @@ export const TrustedOrigin = z.string().transform((value, ctx) => {
   }
   return parsed.origin;
 });
+
+/**
+ * Recovery for a hand-edited `remote-access.json`: keep the entries that pass
+ * `parseTrustedOrigin` (normalized, without repeats, at most `TRUSTED_ORIGINS_MAX`) and drop
+ * the rest, so one bad entry never resets the password and sessions beside it.
+ */
+function keepValidOrigins(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  const kept: string[] = [];
+  for (const entry of value) {
+    const parsed = typeof entry === "string" ? parseTrustedOrigin(entry) : undefined;
+    if (parsed?.ok && !kept.includes(parsed.origin)) kept.push(parsed.origin);
+  }
+  return kept.slice(0, TRUSTED_ORIGINS_MAX);
+}
 
 /** Which kind of address the server answers on. `vpn` covers Tailscale's `100.64.0.0/10`. */
 export const NetworkAddressKind = z.enum(["local", "lan", "vpn"]);
@@ -229,7 +244,7 @@ export const NetworkStatus = z.object({
   /** Keep the listener on 127.0.0.1 while access is on, so a proxy on this machine is the only way in. */
   loopbackOnly: z.boolean().default(false),
   /** HTTPS addresses of a trusted reverse proxy on this machine (e.g. Tailscale Serve). */
-  trustedOrigins: z.array(z.string()).default([]),
+  trustedOrigins: z.array(TrustedOrigin).max(TRUSTED_ORIGINS_MAX).default([]),
   port: z.int().nonnegative(),
   /** Addresses CodeDen answers on: localhost always, LAN and VPN addresses when enabled. */
   addresses: z.array(NetworkAddress),
@@ -329,10 +344,9 @@ export const RemoteAccessFile = z.object({
   /** Keep the listener on 127.0.0.1 while `enabled` (a proxy on this machine fronts it). */
   loopbackOnly: z.boolean().default(false),
   /**
-   * `https://host[:port]` origins of a trusted proxy on this machine. The store re-checks each
-   * with `parseTrustedOrigin` and keeps at most 10, so a hand-edited entry is dropped rather
-   * than resetting the whole file.
+   * `https://host[:port]` origins of a trusted proxy on this machine, at most 10. Entries that
+   * break the rules (hand edits) are dropped when the file is read, never trusted.
    */
-  trustedOrigins: z.array(z.string()).default([]),
+  trustedOrigins: z.preprocess(keepValidOrigins, z.array(TrustedOrigin).max(TRUSTED_ORIGINS_MAX)),
 });
 export type RemoteAccessFile = z.infer<typeof RemoteAccessFile>;

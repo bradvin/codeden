@@ -5,6 +5,8 @@ const BASE_DELAY_MS = 1_000;
 const MAX_DELAY_MS = 30_000;
 /** This many failures inside the window lock the address out. */
 const LOCKOUT_FAILURES = 10;
+/** Password checks one key may have running at once. */
+const MAX_IN_FLIGHT = 1;
 const WINDOW_MS = 15 * 60_000;
 const LOCKOUT_MS = 15 * 60_000;
 
@@ -26,6 +28,8 @@ export type SignInGate =
  */
 export class SignInLimiter {
   private readonly records = new Map<string, AddressRecord>();
+  /** Password checks running now, per key: hashing is slow, so overlapping attempts can't all pass the gate. */
+  private readonly inFlight = new Map<string, number>();
 
   private readonly freeFailures: number;
   private readonly lockoutFailures: number;
@@ -65,6 +69,28 @@ export class SignInLimiter {
     return wait > 0
       ? { allowed: false, reason: "rate_limited", retryAfterMs: wait }
       : { allowed: true };
+  }
+
+  /**
+   * `check`, then reserve the key for one password check: it stays reserved until `release`,
+   * and a second attempt for the same key meanwhile waits (the failure it may be about to
+   * cause isn't counted yet). Always pair an allowed result with `release` (a `finally`).
+   */
+  acquire(address: string): SignInGate {
+    const gate = this.check(address);
+    if (!gate.allowed) return gate;
+    if ((this.inFlight.get(address) ?? 0) >= MAX_IN_FLIGHT) {
+      return { allowed: false, reason: "rate_limited", retryAfterMs: BASE_DELAY_MS };
+    }
+    this.inFlight.set(address, (this.inFlight.get(address) ?? 0) + 1);
+    return gate;
+  }
+
+  /** End the reservation `acquire` made. */
+  release(address: string): void {
+    const left = (this.inFlight.get(address) ?? 1) - 1;
+    if (left <= 0) this.inFlight.delete(address);
+    else this.inFlight.set(address, left);
   }
 
   /** Record a wrong password from `address`. */

@@ -109,9 +109,32 @@ export class RemoteAccessStore {
     this.save();
   }
 
-  setLoopbackOnly(loopbackOnly: boolean): void {
-    this.data = { ...this.data, loopbackOnly };
+  /** The switch and the loopback-only choice, as one saved change (or restored after a failed bind). */
+  get policy(): { enabled: boolean; loopbackOnly: boolean } {
+    return { enabled: this.data.enabled, loopbackOnly: this.data.loopbackOnly };
+  }
+
+  /** Change the switch and/or loopback-only in one write. Turning on needs a password. */
+  setPolicy(change: { enabled?: boolean; loopbackOnly?: boolean }): void {
+    if (change.enabled === true && !this.passwordSet) {
+      throw new Error("Set a network access password before turning network access on.");
+    }
+    this.data = {
+      ...this.data,
+      enabled: change.enabled ?? this.data.enabled,
+      loopbackOnly: change.loopbackOnly ?? this.data.loopbackOnly,
+    };
     this.save();
+  }
+
+  /** Put a previously read policy back without checks (a bind failed). */
+  restorePolicy(policy: { enabled: boolean; loopbackOnly: boolean }): void {
+    this.data = { ...this.data, ...policy };
+    this.save();
+  }
+
+  setLoopbackOnly(loopbackOnly: boolean): void {
+    this.setPolicy({ loopbackOnly });
   }
 
   /** Trust a proxy's HTTPS origin; returns the normalized form. Adding one twice is fine. */
@@ -207,13 +230,8 @@ export class RemoteAccessStore {
       now: this.now,
     });
     if (reset) this.onReset?.(reset);
-    // Hand-edited origins that break the rules are dropped, never trusted.
-    const origins: string[] = [];
-    for (const entry of value.trustedOrigins) {
-      const parsed = parseTrustedOrigin(entry);
-      if (parsed.ok && !origins.includes(parsed.origin)) origins.push(parsed.origin);
-    }
-    return { ...value, trustedOrigins: origins.slice(0, TRUSTED_ORIGINS_MAX) };
+    // The contract drops hand-edited origins that break the rules.
+    return value;
   }
 
   private save(): void {

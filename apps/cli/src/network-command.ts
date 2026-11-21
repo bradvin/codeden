@@ -145,12 +145,17 @@ function printOrigins(origins: readonly string[]): void {
 function printStatus(status: {
   enabled: boolean;
   loopbackOnly: boolean;
+  /** Where the listener is bound right now (not what is configured). */
+  listening: "loopback" | "network";
   addresses: NetworkAddress[];
   trustedOrigins: readonly string[];
 }): void {
-  if (status.enabled && status.loopbackOnly) {
+  if (status.enabled && status.listening === "loopback" && status.loopbackOnly) {
     console.log("Network access is on, loopback only: CodeDen listens on 127.0.0.1 and is");
     console.log("reachable only through a trusted origin (the proxy on this computer).");
+  } else if (status.enabled && status.listening === "loopback") {
+    console.log("Network access is on, but CodeDen is listening on 127.0.0.1 only right now");
+    console.log("(the wider bind did not happen). Check the server's log.");
   } else if (status.enabled) {
     console.log("Network access is on. Open CodeDen on your phone at:");
     printAddresses(status.addresses);

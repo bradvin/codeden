@@ -70,11 +70,28 @@ export class NetworkAccess {
     return this.enabled && !this.store.loopbackOnly ? "0.0.0.0" : "127.0.0.1";
   }
 
-  /** May this client try a password now? Proxy clients also answer to the shared limit. */
-  checkSignIn(client: SignInClient): SignInGate {
-    const own = this.limiter.check(this.limiterKey(client));
-    if (!own.allowed || !client.viaProxy) return own;
-    return this.proxyLimiter.check("proxy");
+  /**
+   * May this client try a password now? An allowed result reserves the client's key (and, for
+   * a proxied client, the one shared key) for the check: call `release` when it is done,
+   * whatever the outcome. Overlapping checks for one key, or through the proxy at all, wait.
+   */
+  beginSignIn(client: SignInClient): { gate: SignInGate; release: () => void } {
+    const key = this.limiterKey(client);
+    const own = this.limiter.acquire(key);
+    if (!own.allowed) return { gate: own, release: () => {} };
+    if (!client.viaProxy) return { gate: own, release: () => this.limiter.release(key) };
+    const shared = this.proxyLimiter.acquire("proxy");
+    if (!shared.allowed) {
+      this.limiter.release(key);
+      return { gate: shared, release: () => {} };
+    }
+    return {
+      gate: shared,
+      release: () => {
+        this.limiter.release(key);
+        this.proxyLimiter.release("proxy");
+      },
+    };
   }
 
   failSignIn(client: SignInClient): void {
@@ -147,19 +164,49 @@ export class NetworkAccess {
   }
 
   /** Turn network access on (needs a password) or off, and move the listener to match. */
-  async setEnabled(enabled: boolean): Promise<void> {
-    this.store.setEnabled(enabled);
-    await this.applyBinding();
+  setEnabled(enabled: boolean): Promise<void> {
+    return this.update({ enabled });
   }
 
   /** Keep the listener on 127.0.0.1 while access is on, or let it go wide again. */
-  async setLoopbackOnly(loopbackOnly: boolean): Promise<void> {
-    this.store.setLoopbackOnly(loopbackOnly);
-    await this.applyBinding();
+  setLoopbackOnly(loopbackOnly: boolean): Promise<void> {
+    return this.update({ loopbackOnly });
+  }
+
+  private queue: Promise<unknown> = Promise.resolve();
+
+  /** Run `task` after every earlier policy change and bind has finished. */
+  private serial<T>(task: () => Promise<T>): Promise<T> {
+    const run = this.queue.then(task);
+    this.queue = run.catch(() => {});
+    return run;
+  }
+
+  /**
+   * Save the switch and/or loopback-only and bind the listener to match, as one step that
+   * waits for any earlier one. If the bind fails the saved policy is put back (the listener
+   * falls back to loopback), so what is stored and where it listens never disagree for long.
+   */
+  update(change: { enabled?: boolean; loopbackOnly?: boolean }): Promise<void> {
+    return this.serial(async () => {
+      const before = this.store.policy;
+      this.store.setPolicy(change);
+      try {
+        await this.bindNow();
+      } catch (error) {
+        this.store.restorePolicy(before);
+        await this.bindNow().catch(() => {});
+        throw error;
+      }
+    });
   }
 
   /** Bind the listener where the stored settings say; drops remote connections when off. */
-  async applyBinding(): Promise<void> {
+  applyBinding(): Promise<void> {
+    return this.serial(() => this.bindNow());
+  }
+
+  private async bindNow(): Promise<void> {
     const host = this.desiredHost();
     await this.listener.rebind(host);
     this.cached = undefined;

@@ -184,10 +184,10 @@ describe("trusted origins", () => {
     return r.ok ? r.origin : null;
   };
 
-  it("normalizes: lowercase, :443 dropped, one optional trailing slash", () => {
+  it("normalizes: lowercase, :443 dropped", () => {
     expect(origin("https://Box.Tail1234.TS.net:8445")).toBe("https://box.tail1234.ts.net:8445");
     expect(origin("https://box.ts.net:443")).toBe("https://box.ts.net");
-    expect(origin("  https://box.ts.net/ ")).toBe("https://box.ts.net");
+    expect(origin("  https://box.ts.net ")).toBe("https://box.ts.net");
     expect(origin("https://my-box")).toBe("https://my-box");
   });
 
@@ -195,6 +195,7 @@ describe("trusted origins", () => {
     for (const bad of [
       "http://box.ts.net",
       "box.ts.net",
+      "https://box.ts.net/",
       "https://box.ts.net/app",
       "https://box.ts.net?x=1",
       "https://box.ts.net/?x=1",
@@ -231,5 +232,36 @@ describe("trusted origins", () => {
       true,
     );
     expect(SetNetworkAccessRequest.safeParse({}).success).toBe(false);
+  });
+
+  it("is enforced by the shared schemas, not only the store", () => {
+    const eleven = Array.from({ length: 11 }, (_, i) => `https://h${i}.ts.net`);
+    expect(NetworkStatus.safeParse({ ...status, trustedOrigins: eleven }).success).toBe(false);
+    for (const bad of ["http://a.ts.net/x", "https://a.ts.net/", "https://Upper.ts.net"]) {
+      // Only the normalized form is accepted from the wire.
+      const parsed = NetworkStatus.safeParse({ ...status, trustedOrigins: [bad] });
+      expect(parsed.success && parsed.data.trustedOrigins[0] === bad, bad).toBe(false);
+    }
+    expect(NetworkStatus.parse({ ...status, trustedOrigins: undefined }).trustedOrigins).toEqual(
+      [],
+    );
+  });
+
+  it("drops bad hand-edited entries from the file, keeping the rest and the password", () => {
+    const edited = {
+      password: { hash: "scrypt$32768$8$1$c2FsdA$aGFzaA", setAt: "2026-11-08T09:00:00.000Z" },
+      trustedOrigins: [
+        "http://a.ts.net/x",
+        "HTTPS://Ok.ts.net:443",
+        "https://ok.ts.net",
+        42,
+        ...Array.from({ length: 12 }, (_, i) => `https://h${i}.ts.net`),
+      ],
+    };
+    const file = RemoteAccessFile.parse(edited);
+    expect(file.password).not.toBeNull();
+    expect(file.trustedOrigins).toHaveLength(10);
+    expect(file.trustedOrigins.slice(0, 2)).toEqual(["https://ok.ts.net", "https://h0.ts.net"]);
+    expect(RemoteAccessFile.parse({ trustedOrigins: "nope" }).trustedOrigins).toEqual([]);
   });
 });

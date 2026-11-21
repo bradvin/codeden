@@ -4,7 +4,7 @@ import { join } from "node:path";
 import type { NetworkStatus, SetNetworkPasswordResponse, SignInError } from "@codeden/contracts";
 import { uiContentSecurityPolicy } from "@codeden/contracts";
 import { Hono } from "hono";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { NetworkAccess } from "../src/network/access";
 import type { BindHost, HttpListener } from "../src/network/listener";
 import { RemoteAccessStore } from "../src/network/store";
@@ -641,5 +641,68 @@ describe("trusted origin through a proxy on this machine", () => {
     const res = await proxied("/api/snapshot", { headers: auth });
     expect(res.status).toBe(403);
     expect(await res.text()).toBe("Forbidden host");
+  });
+
+  it("reserves the shared limit while a password is being checked", async () => {
+    let finish: (ok: boolean) => void = () => {};
+    let calls = 0;
+    network.store.checkPassword = () => {
+      calls++;
+      return new Promise<boolean>((resolve) => {
+        finish = resolve;
+      });
+    };
+    const first = proxiedSignIn("anything at all", "100.64.5.1");
+    await vi.waitFor(() => expect(calls).toBe(1));
+    // Other devices behind the proxy, and the same one again, wait: no second check starts.
+    for (const xff of ["100.64.5.2", "100.64.5.3", "100.64.5.1"]) {
+      const res = await proxiedSignIn(GOOD, xff);
+      expect(res.status, xff).toBe(429);
+    }
+    expect(calls).toBe(1);
+    finish(false);
+    expect((await first).status).toBe(401);
+    // The reservation is released: the next attempt runs.
+    const next = proxiedSignIn(GOOD, "100.64.5.2");
+    await vi.waitFor(() => expect(calls).toBe(2));
+    finish(true);
+    expect((await next).status).toBe(200);
+  });
+
+  it("releases the reservation when the check throws", async () => {
+    network.store.checkPassword = () => Promise.reject(new Error("boom"));
+    expect((await proxiedSignIn(GOOD, "100.64.6.1")).status).toBe(500);
+    network.store.checkPassword = async () => true;
+    expect((await proxiedSignIn(GOOD, "100.64.6.2")).status).toBe(200);
+  });
+});
+
+describe("network policy changes", () => {
+  it("run one at a time, and a failed bind puts the saved policy back", async () => {
+    await network.setPassword({ password: GOOD });
+    const order: string[] = [];
+    let release: () => void = () => {};
+    listener.rebind = async (host: BindHost) => {
+      order.push(`start ${host}`);
+      if (order.length === 1) await new Promise<void>((r) => (release = r));
+      listener.host = host;
+      order.push(`end ${host}`);
+    };
+    const wide = network.update({ enabled: true });
+    const narrow = network.update({ loopbackOnly: true });
+    await vi.waitFor(() => expect(order).toEqual(["start 0.0.0.0"]));
+    release();
+    await Promise.all([wide, narrow]);
+    expect(order).toEqual(["start 0.0.0.0", "end 0.0.0.0", "start 127.0.0.1", "end 127.0.0.1"]);
+    expect(network.store.policy).toEqual({ enabled: true, loopbackOnly: true });
+    expect(listener.host).toBe("127.0.0.1");
+
+    listener.rebind = async (host: BindHost) => {
+      if (host === "0.0.0.0") throw new Error("EADDRINUSE");
+      listener.host = host;
+    };
+    await expect(network.update({ loopbackOnly: false })).rejects.toThrow("EADDRINUSE");
+    expect(network.store.policy).toEqual({ enabled: true, loopbackOnly: true });
+    expect(network.desiredHost()).toBe(listener.host);
   });
 });

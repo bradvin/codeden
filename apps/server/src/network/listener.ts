@@ -44,8 +44,16 @@ export class HttpListener {
     return this.boundPort;
   }
 
-  /** Move the listener to `host` on the same port. Open connections stay open. */
-  async rebind(host: BindHost): Promise<void> {
+  private rebinding: Promise<unknown> = Promise.resolve();
+
+  /** Move the listener to `host` on the same port. Open connections stay open. Rebinds run one at a time. */
+  rebind(host: BindHost): Promise<void> {
+    const run = this.rebinding.then(() => this.rebindNow(host));
+    this.rebinding = run.catch(() => {});
+    return run;
+  }
+
+  private async rebindNow(host: BindHost): Promise<void> {
     if (host === this.boundHost && this.server) return;
     this.server?.close();
     this.server = undefined;

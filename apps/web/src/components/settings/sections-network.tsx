@@ -188,7 +188,7 @@ export function NetworkSettings() {
             aria-label="Allow network access"
             data-testid="network-toggle"
             checked={status.enabled}
-            disabled={remote || !status.passwordSet || toggle.isPending}
+            disabled={remote || !status.passwordSet || toggle.isPending || loopback.isPending}
             onCheckedChange={(enabled) => toggle.mutate(enabled)}
           />
         </SettingRow>
@@ -204,7 +204,7 @@ export function NetworkSettings() {
             aria-label="Listen on this computer only"
             data-testid="network-loopback-only"
             checked={status.loopbackOnly}
-            disabled={remote || loopback.isPending}
+            disabled={remote || loopback.isPending || toggle.isPending}
             onCheckedChange={(on) => loopback.mutate(on)}
           />
         </SettingRow>

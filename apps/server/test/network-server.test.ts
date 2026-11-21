@@ -225,6 +225,27 @@ describe("network access on a real server", () => {
       });
     });
 
+    it("keeps the stored policy and the socket in step when changes overlap", async () => {
+      server = await start();
+      await post("/api/network/password", { password: GOOD });
+      await put({ enabled: true });
+      const flips = [true, false, true, false, true, true, false, true];
+      // Straight at the access object: HTTP clients would race the socket swap itself.
+      await Promise.all(flips.map((loopbackOnly) => server?.network.update({ loopbackOnly })));
+      const status = (await (await api("/api/network")).json()) as NetworkStatus;
+      expect(status.loopbackOnly).toBe(true);
+      expect(status.listening).toBe("loopback");
+      expect(server.network.desiredHost()).toBe("127.0.0.1");
+      if (lanAddress) {
+        await expect(fetch(`http://${lanAddress}:${server.port}/api/health`)).rejects.toThrow();
+      }
+      await Promise.all(
+        [false, true, false].map((loopbackOnly) => server?.network.update({ loopbackOnly })),
+      );
+      const wide = (await (await api("/api/network")).json()) as NetworkStatus;
+      expect(wide).toMatchObject({ loopbackOnly: false, listening: "network" });
+    });
+
     it("lists, adds and removes trusted origins on this machine only, validating them", async () => {
       server = await start();
       const added = await post("/api/network/origins", { url: "https://Box.Tail1234.ts.net:8445" });
