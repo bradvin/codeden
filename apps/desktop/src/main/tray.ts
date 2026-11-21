@@ -4,6 +4,7 @@ import type { TrayView } from "./tray-view";
 export interface TrayActions {
   open: () => void;
   openInbox: () => void;
+  openServer: (id: string) => void;
   update: (command: "download" | "install") => void;
   quit: () => void;
 }
@@ -55,6 +56,12 @@ export class AppTray {
     const view = this.view;
     const items: MenuItemConstructorOptions[] = [];
     for (const line of view?.lines ?? ["Starting..."]) items.push({ label: line, enabled: false });
+    for (const server of view?.servers ?? []) {
+      items.push({
+        label: server.line,
+        submenu: [{ label: "Open", click: () => this.actions.openServer(server.id) }],
+      });
+    }
     items.push({ type: "separator" });
     items.push({ label: "Open CodeDen", click: () => this.actions.open() });
     items.push({ label: "Open the inbox", click: () => this.actions.openInbox() });

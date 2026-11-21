@@ -7,8 +7,16 @@ import { WindowZoom, type ZoomCommand } from "./zoom";
 
 export interface MainWindowOptions {
   preload: string;
+  /** A window on another machine's server (§17): its own partition, no token, a smaller bridge. */
+  remote?: {
+    /** `persist:codeden-remote-<id>` */
+    partition: string;
+    name: string;
+    /** The server's origin; the window never leaves it. */
+    origin: string;
+  };
   icon: string;
-  /** `<home>/desktop/window-state.json`. */
+  /** `<home>/desktop/window-state.json` (`window-state-<server id>.json` for a remote server). */
   stateFile: string;
   show: boolean;
   /** Close hides the window instead (keep running in the tray); read on every close. */
@@ -25,11 +33,14 @@ export interface MainWindowOptions {
 export class MainWindow {
   readonly window: BrowserWindow;
   private readonly zoomControl: WindowZoom;
-  private origin: string | null = null;
+  private origin: string | null;
+  private remoteName: string;
   private quitting = false;
 
   constructor(private readonly opts: MainWindowOptions) {
     const saved = readWindowState(opts.stateFile);
+    this.origin = opts.remote?.origin ?? null;
+    this.remoteName = opts.remote?.name ?? "";
     // The primary display first: the default size is fitted to it.
     const displays = screen.getAllDisplays().map((d) => d.workArea);
     const bounds = restoreBounds(saved, [screen.getPrimaryDisplay().workArea, ...displays]);
@@ -41,12 +52,16 @@ export class MainWindow {
       minWidth: 900,
       minHeight: 600,
       show: false,
-      title: "CodeDen",
+      title: opts.remote ? `CodeDen: ${opts.remote.name}` : "CodeDen",
       icon: opts.icon,
       backgroundColor: nativeTheme.shouldUseDarkColors ? "#0b0d10" : "#ffffff",
       autoHideMenuBar: process.platform !== "darwin",
       webPreferences: {
         preload: opts.preload,
+        // Its own cookies and storage, kept across restarts; never shared with another server.
+        ...(opts.remote ? { partition: opts.remote.partition } : {}),
+        // The preload offers a smaller bridge in a remote window (the main process enforces it).
+        additionalArguments: [`--codeden-window=${opts.remote ? "remote" : "local"}`],
         contextIsolation: true,
         sandbox: true,
         nodeIntegration: false,
@@ -87,6 +102,17 @@ export class MainWindow {
     }
   }
 
+  /** A renamed remote server: the title leads with the new name. */
+  rename(name: string): void {
+    this.remoteName = name;
+    if (!this.window.isDestroyed())
+      this.window.setTitle(`${name}: ${this.window.webContents.getTitle()}`);
+  }
+
+  get webContentsId(): number {
+    return this.window.webContents.id;
+  }
+
   get serverOrigin(): string | null {
     return this.origin;
   }
@@ -119,6 +145,13 @@ export class MainWindow {
       if (external) void shell.openExternal(external);
     });
     contents.on("will-attach-webview", (event) => event.preventDefault());
+    if (this.opts.remote) {
+      // The page's own title (it carries the unread count), led by the server's name.
+      contents.on("page-title-updated", (event, title) => {
+        event.preventDefault();
+        this.window.setTitle(`${this.remoteName}: ${title}`);
+      });
+    }
     const session = contents.session;
     applyContentSecurityPolicy(session, () => this.origin);
     session.setPermissionRequestHandler((wc, permission, callback, details) => {

@@ -9,6 +9,8 @@ export interface MenuActions {
   openLogs: () => void;
   quit: () => void;
   zoom: (command: ZoomCommand) => void;
+  /** The Servers menu's items (§17), from `serverMenuItems`. */
+  servers?: MenuItemConstructorOptions[];
 }
 
 /**
@@ -101,6 +103,7 @@ export function appMenuTemplate(
       { role: "togglefullscreen" },
     ],
   });
+  if (actions.servers) template.push({ label: "Servers", submenu: actions.servers });
   template.push({ role: "windowMenu" });
   template.push({
     role: "help",

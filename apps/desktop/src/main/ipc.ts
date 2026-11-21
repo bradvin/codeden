@@ -16,20 +16,27 @@ import {
 } from "electron";
 import { z } from "zod";
 import { CHANNELS } from "../shared/channels";
-import { createNotifier } from "./notifications";
-import { externalUrl, isServerUrl } from "./security";
+import { createNotifier, type Notifier } from "./notifications";
+import { externalUrl, redactToken } from "./security";
+import {
+  authorizeBridgeCall,
+  type BridgeCall,
+  type BridgeCaller,
+  notificationTitle,
+} from "./servers/bridge-policy";
 
 export interface BridgeHost {
-  info: () => DesktopInfo;
-  /** The server origin the window may call from, null before it loaded. */
-  origin: () => string | null;
-  window: () => BrowserWindow | null;
-  /** Bring the window up (a notification was clicked). */
-  showWindow: () => void;
-  setBadge: (count: number) => void;
+  /** Which server's window a `webContents` is, null for anything that isn't one. */
+  caller: (contentsId: number) => BridgeCaller | null;
+  info: (caller: BridgeCaller) => DesktopInfo;
+  /** Bring a server's window up and tell it the notification with `tag` was clicked. */
+  notificationClicked: (serverId: string, tag: string | undefined) => void;
+  setBadge: (caller: BridgeCaller, count: number) => void;
+  /** Pop up the native servers menu over the calling window. */
+  showServerMenu: (window: BrowserWindow | null, caller: BridgeCaller) => void;
   icon: string;
   log: (message: string) => void;
-  /** Native browser views (§17 Phase 2). */
+  /** Native browser views (§17 Phase 2); This Mac's window only. */
   browser: {
     show(sessionId: string, bounds: NativeBrowserBounds): void;
     hide(sessionId: string): void;
@@ -43,24 +50,34 @@ const PickFolder = z
   .default({});
 
 /**
- * The main-process side of `window.codedenDesktop` (§17). Calls are accepted only from the
- * CodeDen window showing the server's UI, and every payload is validated.
+ * The main-process side of `window.codedenDesktop` (§17). Every call passes
+ * `authorizeBridgeCall`: it must come from a CodeDen window's own server origin, and a window on
+ * another machine's server only gets the smaller set of calls. Every payload is validated.
  */
 export function registerBridge(host: BridgeHost): void {
-  const trusted = (event: IpcMainEvent | IpcMainInvokeEvent): boolean => {
-    const origin = host.origin();
+  /** The caller, when `call` is allowed from this sender; null (and a log line) otherwise. */
+  const allow = (
+    event: IpcMainEvent | IpcMainInvokeEvent,
+    call: BridgeCall,
+  ): BridgeCaller | null => {
+    const caller = host.caller(event.sender.id);
     const url = event.senderFrame?.url ?? "";
-    const ok = origin !== null && isServerUrl(url, origin);
-    if (!ok) host.log(`bridge: ignored a call from ${url || "an unknown frame"}`);
-    return ok;
+    if (authorizeBridgeCall(caller, call, url)) return caller;
+    host.log(
+      `bridge: refused ${call} from ${caller?.server.name ?? "an unknown window"}, frame ${redactToken(url).slice(0, 200) || "an unknown frame"}`,
+    );
+    return null;
   };
 
-  ipcMain.handle(CHANNELS.info, (event) => (trusted(event) ? host.info() : null));
+  ipcMain.handle(CHANNELS.info, (event) => {
+    const caller = allow(event, "info");
+    return caller ? host.info(caller) : null;
+  });
 
   ipcMain.handle(CHANNELS.pickFolder, async (event, raw) => {
-    if (!trusted(event)) return null;
+    if (!allow(event, "pickFolder")) return null;
     const opts = PickFolder.parse(raw ?? {});
-    const win = BrowserWindow.fromWebContents(event.sender) ?? host.window();
+    const win = BrowserWindow.fromWebContents(event.sender);
     const options = {
       title: opts.title ?? "Choose a folder",
       defaultPath: opts.defaultPath,
@@ -75,55 +92,71 @@ export function registerBridge(host: BridgeHost): void {
   });
 
   // A notification with the tag of one still on screen replaces it (a grouped burst stays one).
-  const notifier = createNotifier(
-    (opts) =>
-      new Notification({ ...opts, icon: process.platform === "darwin" ? undefined : host.icon }),
-    (tag) => {
-      host.showWindow();
-      if (tag) host.window()?.webContents.send(CHANNELS.notificationClick, tag);
-    },
-  );
+  // One notifier per server, so a click goes back to the window that showed it.
+  const notifiers = new Map<string, Notifier>();
+  const notifierFor = (serverId: string): Notifier => {
+    let notifier = notifiers.get(serverId);
+    if (!notifier) {
+      notifier = createNotifier(
+        (opts) =>
+          new Notification({
+            ...opts,
+            icon: process.platform === "darwin" ? undefined : host.icon,
+          }),
+        (tag) => host.notificationClicked(serverId, tag),
+      );
+      notifiers.set(serverId, notifier);
+    }
+    return notifier;
+  };
   ipcMain.on(CHANNELS.notify, (event, raw) => {
-    if (!trusted(event) || !Notification.isSupported()) return;
+    const caller = allow(event, "notify");
+    if (!caller || !Notification.isSupported()) return;
     const parsed = DesktopNotification.safeParse(raw);
     if (!parsed.success) return;
-    notifier.show({
-      title: parsed.data.title,
+    notifierFor(caller.server.id).show({
+      title: notificationTitle(caller, parsed.data.title),
       body: parsed.data.body ?? "",
       tag: parsed.data.tag || undefined,
     });
   });
 
   ipcMain.on(CHANNELS.openExternal, (event, raw) => {
-    if (!trusted(event) || typeof raw !== "string") return;
+    if (!allow(event, "openExternal") || typeof raw !== "string") return;
     const url = externalUrl(raw);
     if (url) void shell.openExternal(url);
   });
 
   ipcMain.on(CHANNELS.setBadge, (event, raw) => {
-    if (!trusted(event)) return;
+    const caller = allow(event, "setBadge");
+    if (!caller) return;
     const count = z.int().min(0).max(100_000).safeParse(raw);
-    if (count.success) host.setBadge(count.data);
+    if (count.success) host.setBadge(caller, count.data);
+  });
+
+  ipcMain.on(CHANNELS.serverMenu, (event) => {
+    const caller = allow(event, "serverMenu");
+    if (caller) host.showServerMenu(BrowserWindow.fromWebContents(event.sender), caller);
   });
 
   // Native browser views: the UI only places them; tabs and navigation go through the server.
   ipcMain.on(CHANNELS.browserShow, (event, raw) => {
-    if (!trusted(event)) return;
+    if (!allow(event, "browser")) return;
     const show = NativeBrowserShow.safeParse(raw);
     if (show.success) host.browser.show(show.data.sessionId, show.data.bounds);
   });
   ipcMain.on(CHANNELS.browserHide, (event, raw) => {
-    if (!trusted(event)) return;
+    if (!allow(event, "browser")) return;
     const sessionId = Id.safeParse(raw);
     if (sessionId.success) host.browser.hide(sessionId.data);
   });
   ipcMain.handle(CHANNELS.browserCapture, (event, raw) => {
-    if (!trusted(event)) return null;
+    if (!allow(event, "browser")) return null;
     const sessionId = Id.safeParse(raw);
     return sessionId.success ? host.browser.capture(sessionId.data) : null;
   });
   ipcMain.on(CHANNELS.browserInspect, (event, raw) => {
-    if (!trusted(event)) return;
+    if (!allow(event, "browser")) return;
     const sessionId = Id.safeParse(raw);
     if (sessionId.success) host.browser.inspect(sessionId.data);
   });

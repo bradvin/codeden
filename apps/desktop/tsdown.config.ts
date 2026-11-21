@@ -32,7 +32,10 @@ export default defineConfig([
     plugins: [thirdPartyNotices({ fileName: "THIRD-PARTY-NOTICES-APP.txt" })],
   },
   {
-    entry: { preload: "src/preload/preload.ts" },
+    entry: {
+      preload: "src/preload/preload.ts",
+      "servers-preload": "src/preload/servers.ts",
+    },
     format: "cjs",
     platform: "node",
     target: "node24",

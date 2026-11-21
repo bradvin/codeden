@@ -5,7 +5,7 @@ import {
   deepLinkPath,
   parseDeepLink,
 } from "@codeden/contracts";
-import { app, dialog, Menu, Notification, shell } from "electron";
+import { app, BrowserWindow, dialog, Menu, Notification, shell } from "electron";
 import { CHANNELS } from "../shared/channels";
 import { ActivityMonitor, type ServerStatus } from "./activity";
 import type { LaunchArgs } from "./args";
@@ -16,6 +16,12 @@ import { armQuitWatchdog, forceExit } from "./exit";
 import { registerBridge } from "./ipc";
 import { appMenuTemplate } from "./menu";
 import { homeFiles } from "./server-plan";
+import type { BridgeCaller } from "./servers/bridge-policy";
+import { ServerHub } from "./servers/hub";
+import { ServerManager } from "./servers/manager";
+import { WindowRegistry } from "./servers/registry";
+import { ServerStore } from "./servers/store";
+import { ServerSwitcher } from "./servers/switcher";
 import {
   applyLaunchAtLogin,
   fileLogger,
@@ -51,6 +57,10 @@ export class DesktopApp {
   private readonly keepAwake = new KeepAwake();
   private updates!: UpdateController;
   private browser!: NativeBrowserFeature;
+  private hub!: ServerHub;
+  private switcher!: ServerSwitcher;
+  private manager!: ServerManager;
+  private readonly registry = new WindowRegistry<MainWindow>();
   private monitor: ActivityMonitor | undefined;
   private conn: Connection | undefined;
   private status: ServerStatus = { connected: false, activity: null, settings: null };
@@ -96,12 +106,43 @@ export class DesktopApp {
       this.notifyUpdate();
     });
 
+    const desktopDir = homeFiles(this.args.home).desktop;
+    this.hub = new ServerHub({
+      store: new ServerStore(join(desktopDir, "servers.json")),
+      stateDir: desktopDir,
+      preload: join(this.dist, "preload.cjs"),
+      icon: this.asset("icon.png"),
+      appVersion: app.getVersion(),
+      registry: this.registry,
+      onChange: () => this.serversChanged(),
+      log: this.log,
+    });
+    this.manager = new ServerManager({
+      preload: join(this.dist, "servers-preload.cjs"),
+      page: this.asset("servers.html"),
+      icon: this.asset("icon.png"),
+      host: {
+        rows: () => this.switcher.rows(),
+        add: (name, url) => this.hub.add(name, url),
+        rename: (id, name) => this.hub.rename(id, name),
+        remove: (id) => this.hub.remove(id),
+        open: (id) => this.switcher.open(id),
+      },
+      log: this.log,
+    });
+    this.switcher = new ServerSwitcher({
+      hub: this.hub,
+      localName: process.platform === "darwin" ? "This Mac" : "This computer",
+      showLocal: () => this.show(),
+      manage: () => this.manager.show(),
+    });
     Menu.setApplicationMenu(Menu.buildFromTemplate(this.menu()));
     this.tray = new AppTray(
       this.asset(process.platform === "darwin" ? "trayTemplate.png" : "tray.png"),
       {
         open: () => this.show(),
         openInbox: () => this.navigate("/inbox"),
+        openServer: (id) => this.switcher.open(id),
         update: (command) => void this.runUpdate(command),
         quit: () => app.quit(),
       },
@@ -109,23 +150,34 @@ export class DesktopApp {
     this.window = new MainWindow({
       preload: join(this.dist, "preload.cjs"),
       icon: this.asset("icon.png"),
-      stateFile: join(homeFiles(this.args.home).desktop, "window-state.json"),
+      stateFile: join(desktopDir, "window-state.json"),
       show: !this.args.hidden && !openedAtLogin(),
       hideOnClose: () => this.status.settings?.desktop.closeToTray ?? true,
       log: this.log,
     });
     this.badge = new AppBadge(() => this.window.window, this.asset("badge.png"));
     this.browser = new NativeBrowserFeature({ window: () => this.window.window, log: this.log });
+    this.registry.add(
+      this.window.webContentsId,
+      (): BridgeCaller => ({
+        kind: "local",
+        server: this.switcher.localRef,
+        origin: this.window.serverOrigin,
+      }),
+      this.window,
+    );
     registerBridge({
-      info: () => this.info(),
-      origin: () => this.window.serverOrigin,
-      window: () => this.window.window,
-      showWindow: () => this.show(),
-      setBadge: (count) => this.badge.set(count),
+      caller: (id) => this.registry.caller(id),
+      info: (caller) => this.info(caller),
+      notificationClicked: (serverId, tag) => this.notificationClicked(serverId, tag),
+      // The icon shows what waits across every server, whichever window reports a count.
+      setBadge: () => this.refresh(),
+      showServerMenu: (window, caller) => this.switcher.popup(window, caller.server.id),
       icon: this.asset("icon.png"),
       log: this.log,
       browser: this.browser.browsers,
     });
+    this.hub.start();
     this.exposeForTests();
     await this.open();
   }
@@ -170,6 +222,22 @@ export class DesktopApp {
     this.window?.show();
   }
 
+  /** A notification was clicked: bring its server's window up, then open what it is about. */
+  private notificationClicked(serverId: string, tag: string | undefined): void {
+    const window = this.registry.windowFor(serverId);
+    if (!window) return;
+    window.show();
+    if (tag) window.window.webContents.send(CHANNELS.notificationClick, tag);
+  }
+
+  /** The list or a remote's state changed: the menus, tray, badge and manager follow. */
+  private serversChanged(): void {
+    if (!this.switcher) return;
+    Menu.setApplicationMenu(Menu.buildFromTemplate(this.menu()));
+    this.refresh();
+    this.manager.changed();
+  }
+
   /** A second launch (or a `codeden://` link on Windows and Linux) focuses this instance. */
   secondInstance(args: LaunchArgs): void {
     if (args.deepLink) this.openLink(args.deepLink);
@@ -211,6 +279,9 @@ export class DesktopApp {
     void (async () => {
       try {
         this.window?.allowClose();
+        this.hub?.allowClose();
+        this.hub?.stop();
+        this.manager?.close();
         clearInterval(this.standaloneTimer);
         this.monitor?.stop();
         this.keepAwake.set(false);
@@ -237,6 +308,9 @@ export class DesktopApp {
   /** Before the installer runs: stop the server and drain the runner (as `codeden stop`). */
   private async prepareInstall(): Promise<void> {
     this.window.allowClose();
+    this.hub.allowClose();
+    this.hub.stop();
+    this.manager.close();
     this.monitor?.stop();
     const server = this.conn?.server;
     if (server) {
@@ -296,9 +370,10 @@ export class DesktopApp {
       connected: this.status.connected,
       update: this.updates.state,
       autoUpdate: this.status.settings?.updates.mode === "auto",
+      remotes: this.hub?.summaries() ?? [],
     });
     this.tray.update(view);
-    if (this.status.connected) this.badge?.set(view.badge);
+    this.badge?.set(view.badge);
   }
 
   /** Attached to a server started by `codeden`: follow the update mode here (§17). */
@@ -337,14 +412,17 @@ export class DesktopApp {
     }).show();
   }
 
-  private info(): DesktopInfo {
+  private info(caller: BridgeCaller): DesktopInfo {
+    const remote = caller.kind === "remote";
     return {
       version: app.getVersion(),
       platform: process.platform as DesktopInfo["platform"],
       packaged: app.isPackaged,
-      ownsServer: Boolean(this.conn?.server),
-      launchAtLoginSupported,
-      nativeBrowser: true,
+      // A remote window shows another machine's server: nothing here is its to own or start.
+      ownsServer: !remote && Boolean(this.conn?.server),
+      launchAtLoginSupported: !remote && launchAtLoginSupported,
+      nativeBrowser: !remote,
+      server: caller.server,
     };
   }
 
@@ -359,9 +437,13 @@ export class DesktopApp {
       openDocs: () => void shell.openExternal(DOCS_URL),
       openLogs: () => void shell.openPath(homeFiles(this.args.home).logs),
       quit: () => app.quit(),
+      servers: this.switcher.menuItems(),
       zoom: (command) => {
-        this.window?.zoom(command);
-        this.browser?.browsers.layout();
+        // The window in front: This Mac's or a remote server's, each keeps its own zoom.
+        const focused = BrowserWindow.getFocusedWindow();
+        const target = (focused && this.registry.window(focused.webContents.id)) || this.window;
+        target?.zoom(command);
+        if (target === this.window) this.browser?.browsers.layout();
       },
     });
   }

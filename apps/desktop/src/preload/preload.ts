@@ -15,7 +15,11 @@ function subscribe<T>(channel: string, listener: (value: T) => void): () => void
   };
 }
 
+/** The main process says which kind of window this is (`webPreferences.additionalArguments`). */
+const remote = process.argv.includes("--codeden-window=remote");
+
 const api: CodedenDesktopApi = {
+  remote,
   info: () => ipcRenderer.invoke(CHANNELS.info),
   pickFolder: (opts) => ipcRenderer.invoke(CHANNELS.pickFolder, opts ?? {}),
   notify: (notification) => ipcRenderer.send(CHANNELS.notify, notification),
@@ -23,13 +27,18 @@ const api: CodedenDesktopApi = {
   openExternal: (url) => ipcRenderer.send(CHANNELS.openExternal, url),
   setBadge: (count) => ipcRenderer.send(CHANNELS.setBadge, count),
   onNavigate: (listener) => subscribe(CHANNELS.navigate, listener),
-  browser: {
-    show: (sessionId, bounds) => ipcRenderer.send(CHANNELS.browserShow, { sessionId, bounds }),
-    hide: (sessionId) => ipcRenderer.send(CHANNELS.browserHide, sessionId),
-    capture: (sessionId) => ipcRenderer.invoke(CHANNELS.browserCapture, sessionId),
-    inspect: (sessionId) => ipcRenderer.send(CHANNELS.browserInspect, sessionId),
-    onShortcut: (listener) => subscribe(CHANNELS.browserShortcut, listener),
-  },
+  showServerMenu: () => ipcRenderer.send(CHANNELS.serverMenu),
+  // A window on another machine's server has no native browser views (the relay runs here and
+  // can't reach a remote runner). The main process refuses these calls from it regardless.
+  browser: remote
+    ? undefined
+    : {
+        show: (sessionId, bounds) => ipcRenderer.send(CHANNELS.browserShow, { sessionId, bounds }),
+        hide: (sessionId) => ipcRenderer.send(CHANNELS.browserHide, sessionId),
+        capture: (sessionId) => ipcRenderer.invoke(CHANNELS.browserCapture, sessionId),
+        inspect: (sessionId) => ipcRenderer.send(CHANNELS.browserInspect, sessionId),
+        onShortcut: (listener) => subscribe(CHANNELS.browserShortcut, listener),
+      },
 };
 
 contextBridge.exposeInMainWorld("codedenDesktop", api);

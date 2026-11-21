@@ -1,4 +1,5 @@
 import type { ActivitySummary, DesktopUpdateState } from "@codeden/contracts";
+import { remoteLine, type ServerSummary, totalBadge } from "./servers/summary";
 
 export interface TrayInput {
   /** Latest counts from the server, null before the first answer. */
@@ -8,13 +9,19 @@ export interface TrayInput {
   update: DesktopUpdateState;
   /** `settings.updates.mode` is `auto` (a download installs on quit, no prompt needed). */
   autoUpdate: boolean;
+  /** Other servers the app shows (§17), in list order. */
+  remotes?: readonly ServerSummary[];
+  /** This Mac's own summary, for the badge total (the lines above stay about This Mac). */
+  local?: ServerSummary;
 }
 
 export interface TrayView {
   tooltip: string;
   /** Status lines shown (disabled) at the top of the tray menu. */
   lines: string[];
-  /** Count for the app icon badge: things waiting on the user. */
+  /** One entry per other server: its status line, and Open in a submenu. */
+  servers: Array<{ id: string; line: string }>;
+  /** Count for the app icon badge: things waiting on the user, across every server. */
   badge: number;
   /** An update action for the tray menu, if one is due. */
   update: { label: string; command: "download" | "install" | null } | null;
@@ -49,10 +56,20 @@ export function trayView(input: TrayInput): TrayView {
           .filter(Boolean)
           .join(", ") || "idle"
       : "not connected";
+  const remotes = input.remotes ?? [];
+  const local: ServerSummary = input.local ?? {
+    id: "local",
+    name: "This Mac",
+    state: null,
+    connected: input.connected,
+    activity,
+  };
+  const servers = remotes.map((r) => ({ id: r.id, line: remoteLine(r) }));
   return {
-    tooltip: `CodeDen (${summary})`,
+    tooltip: [`CodeDen (${summary})`, ...servers.map((s) => s.line)].join("\n"),
     lines,
-    badge: activity && input.connected ? Math.max(activity.inbox, activity.waiting) : 0,
+    servers,
+    badge: totalBadge([local, ...remotes]),
     update: updateItem(update, input.autoUpdate),
   };
 }
