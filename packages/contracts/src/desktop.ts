@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { Id, Timestamp } from "./common";
+import { DesktopServerRef } from "./desktop-servers";
 import type { InboxItem } from "./entities/inbox";
 import type { Session } from "./entities/session";
 import { BrowserCookie, BrowserHandoffTab, BrowserRelayEndpoint } from "./runner/browser";
@@ -219,6 +220,11 @@ export const DesktopInfo = z.object({
    * `CodedenDesktopApi.browser`. Absent from older apps.
    */
   nativeBrowser: z.boolean().optional(),
+  /**
+   * The server this window shows: This Mac, or another machine's CodeDen (`remote`), where the
+   * UI behaves as in a normal browser. Absent from older apps (always This Mac).
+   */
+  server: DesktopServerRef.optional(),
 });
 export type DesktopInfo = z.infer<typeof DesktopInfo>;
 
@@ -238,6 +244,11 @@ export type DesktopNotification = z.infer<typeof DesktopNotification>;
  * the main process.
  */
 export interface CodedenDesktopApi {
+  /**
+   * True in a window on another machine's server. A hint for the UI to pick its browser
+   * behaviour before `info()` answers; the main process enforces what a remote window may call.
+   */
+  readonly remote?: boolean;
   info(): Promise<DesktopInfo>;
   /** Native folder picker; resolves with an absolute path, or null when cancelled. */
   pickFolder(opts?: { title?: string; defaultPath?: string }): Promise<string | null>;
@@ -250,8 +261,13 @@ export interface CodedenDesktopApi {
   setBadge(count: number): void;
   /** Called with a UI route (e.g. `/sessions/<id>`) when a `codeden://` link is opened. */
   onNavigate(listener: (path: string) => void): () => void;
-  /** Native browser views (§17 Phase 2); absent from older apps. */
+  /** Native browser views (§17 Phase 2); absent from older apps and from remote windows. */
   browser?: CodedenDesktopBrowserApi;
+  /**
+   * Pop up the native servers menu (This Mac, the other servers, Add and Manage). The menu is
+   * built in the main process, so no server list reaches the page. Absent from older apps.
+   */
+  showServerMenu?(): void;
 }
 
 // ---------------------------------------------------------------- native browser views
