@@ -2,6 +2,12 @@ import type { Server as HttpServer } from "node:http";
 import { createServer, type Server, type Socket } from "node:net";
 import { isLoopbackAddress } from "./addresses";
 
+/**
+ * Sockets that carried a request through a trusted proxy's host. Their peer is 127.0.0.1, so
+ * "drop remote connections" (sign-out, network off) has to close these too.
+ */
+export const proxiedSockets = new WeakSet<object>();
+
 export type BindHost = "127.0.0.1" | "0.0.0.0";
 
 /** How long a rebind keeps retrying while the OS releases the port. */
@@ -64,11 +70,11 @@ export class HttpListener {
     }
   }
 
-  /** Close every connection that did not come from this machine (sign-outs, network off). */
+  /** Close every connection that did not come from this machine, or came through the trusted proxy (sign-outs, network off). */
   dropRemote(): number {
     let dropped = 0;
     for (const socket of this.sockets) {
-      if (!isLoopbackAddress(socket.remoteAddress)) {
+      if (!isLoopbackAddress(socket.remoteAddress) || proxiedSockets.has(socket)) {
         socket.destroy();
         dropped++;
       }

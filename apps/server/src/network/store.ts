@@ -1,9 +1,11 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import {
+  parseTrustedOrigin,
   passwordProblem,
   REMOTE_SESSION_DAYS,
   RemoteAccessFile,
   type RemoteSessionRecord,
+  TRUSTED_ORIGINS_MAX,
 } from "@codeden/contracts";
 import { writeJsonFile } from "../json-file";
 import { type FileReset, loadUserJsonFile } from "../user-json-file";
@@ -27,6 +29,11 @@ export class PasswordRuleError extends Error {
   readonly code = "weak_password";
 }
 
+/** A trusted origin the rules refuse (or one too many), with the reason in plain words. */
+export class TrustedOriginError extends Error {
+  readonly code = "invalid_origin";
+}
+
 /**
  * `<home>/remote-access.json` (§15.1): the network switch, the password's scrypt hash and the
  * remote sessions (hashes of their tokens only). Shared by the server and the `codeden
@@ -47,6 +54,16 @@ export class RemoteAccessStore {
 
   get enabled(): boolean {
     return this.data.enabled;
+  }
+
+  /** Keep the listener on 127.0.0.1 while access is on (a proxy on this machine fronts it). */
+  get loopbackOnly(): boolean {
+    return this.data.loopbackOnly;
+  }
+
+  /** Normalized `https://host[:port]` origins of the trusted proxy on this machine. */
+  get trustedOrigins(): readonly string[] {
+    return this.data.trustedOrigins;
   }
 
   get passwordSet(): boolean {
@@ -92,8 +109,39 @@ export class RemoteAccessStore {
     this.save();
   }
 
+  setLoopbackOnly(loopbackOnly: boolean): void {
+    this.data = { ...this.data, loopbackOnly };
+    this.save();
+  }
+
+  /** Trust a proxy's HTTPS origin; returns the normalized form. Adding one twice is fine. */
+  addTrustedOrigin(input: string): string {
+    const parsed = parseTrustedOrigin(input);
+    if (!parsed.ok) throw new TrustedOriginError(parsed.problem);
+    if (this.data.trustedOrigins.includes(parsed.origin)) return parsed.origin;
+    if (this.data.trustedOrigins.length >= TRUSTED_ORIGINS_MAX) {
+      throw new TrustedOriginError(`At most ${TRUSTED_ORIGINS_MAX} trusted origins.`);
+    }
+    this.data = { ...this.data, trustedOrigins: [...this.data.trustedOrigins, parsed.origin] };
+    this.save();
+    return parsed.origin;
+  }
+
+  /** Stop trusting an origin; false when it wasn't listed. */
+  removeTrustedOrigin(input: string): boolean {
+    const parsed = parseTrustedOrigin(input);
+    const origin = parsed.ok ? parsed.origin : input.trim().toLowerCase();
+    if (!this.data.trustedOrigins.includes(origin)) return false;
+    this.data = {
+      ...this.data,
+      trustedOrigins: this.data.trustedOrigins.filter((o) => o !== origin),
+    };
+    this.save();
+    return true;
+  }
+
   /** Start a 90-day session for a device; returns the token for its cookie (stored hashed). */
-  createSession(device: { label: string; address: string | null }): {
+  createSession(device: { label: string; address: string | null; addressViaProxy?: boolean }): {
     token: string;
     session: RemoteSessionRecord;
   } {
@@ -104,6 +152,7 @@ export class RemoteAccessStore {
       tokenHash: sha256(token),
       label: device.label.slice(0, LABEL_MAX) || "Unknown device",
       address: device.address,
+      addressViaProxy: device.addressViaProxy ?? false,
       createdAt: new Date(now).toISOString(),
       lastSeenAt: new Date(now).toISOString(),
       expiresAt: new Date(now + SESSION_MS).toISOString(),
@@ -158,7 +207,13 @@ export class RemoteAccessStore {
       now: this.now,
     });
     if (reset) this.onReset?.(reset);
-    return value;
+    // Hand-edited origins that break the rules are dropped, never trusted.
+    const origins: string[] = [];
+    for (const entry of value.trustedOrigins) {
+      const parsed = parseTrustedOrigin(entry);
+      if (parsed.ok && !origins.includes(parsed.origin)) origins.push(parsed.origin);
+    }
+    return { ...value, trustedOrigins: origins.slice(0, TRUSTED_ORIGINS_MAX) };
   }
 
   private save(): void {

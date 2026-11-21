@@ -27,12 +27,26 @@ export type SignInGate =
 export class SignInLimiter {
   private readonly records = new Map<string, AddressRecord>();
 
-  constructor(private readonly now: () => number = Date.now) {}
+  private readonly freeFailures: number;
+  private readonly lockoutFailures: number;
+
+  /** `limits` loosens the thresholds, for the one shared limit across a trusted proxy's devices. */
+  constructor(
+    private readonly now: () => number = Date.now,
+    limits: { freeFailures?: number; lockoutFailures?: number } = {},
+  ) {
+    this.freeFailures = limits.freeFailures ?? FREE_FAILURES;
+    this.lockoutFailures = limits.lockoutFailures ?? LOCKOUT_FAILURES;
+  }
 
   /** Wait required before the `failures`-th failure may be followed by another attempt. */
   static delayAfter(failures: number): number {
-    if (failures < FREE_FAILURES) return 0;
-    return Math.min(MAX_DELAY_MS, BASE_DELAY_MS * 2 ** (failures - FREE_FAILURES));
+    return SignInLimiter.delayWith(failures, FREE_FAILURES);
+  }
+
+  private static delayWith(failures: number, freeFailures: number): number {
+    if (failures < freeFailures) return 0;
+    return Math.min(MAX_DELAY_MS, BASE_DELAY_MS * 2 ** (failures - freeFailures));
   }
 
   /** May `address` try a password now? */
@@ -45,7 +59,9 @@ export class SignInLimiter {
     }
     const last = record.failures.at(-1);
     const wait =
-      last === undefined ? 0 : last + SignInLimiter.delayAfter(record.failures.length) - now;
+      last === undefined
+        ? 0
+        : last + SignInLimiter.delayWith(record.failures.length, this.freeFailures) - now;
     return wait > 0
       ? { allowed: false, reason: "rate_limited", retryAfterMs: wait }
       : { allowed: true };
@@ -56,7 +72,7 @@ export class SignInLimiter {
     const now = this.now();
     const record = this.prune(address) ?? { failures: [], lockedUntil: 0 };
     record.failures.push(now);
-    if (record.failures.length >= LOCKOUT_FAILURES) {
+    if (record.failures.length >= this.lockoutFailures) {
       record.lockedUntil = now + LOCKOUT_MS;
       record.failures = [];
     }
