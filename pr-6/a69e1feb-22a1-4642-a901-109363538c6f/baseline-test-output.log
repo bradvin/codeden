@@ -1,0 +1,143 @@
+The machine is busy (45% idle): 2 test workers.
+
+ RUN  v5.1.0 /private/tmp/codeden-pm-baseline.w2qXiA
+
+(node:63297) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+ ❯ |@codeden/server| test/factory-run-failed-inbox.test.ts (19 tests | 1 failed) 331ms
+   ❯ Retry of a failed run (#275) (3)
+     × that fails again updates the same item in place 16ms
+(node:63327) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:63426) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+ ❯ |@codeden/server (clock 00:05)| test/factory-run-failed-inbox.test.ts (19 tests | 1 failed) 308ms
+   ❯ Retry of a failed run (#275) (3)
+     × that fails again updates the same item in place 16ms
+(node:63427) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+ ❯ |@codeden/server| test/checks-loop-rounds.test.ts (7 tests | 2 failed) 20461ms
+   ❯ the checks loop's round count (#412) (6)
+     × starts the count again on a new user message 10037ms
+     × starts the count again when the user switches the loop off and on 10062ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 4 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  |@codeden/server (clock 00:05)| test/factory-run-failed-inbox.test.ts > Retry of a failed run (#275) > that fails again updates the same item in place
+AssertionError: expected [ { …(20) } ] to deeply equal [ ObjectContaining{…} ]
+
+- Expected
++ Received
+
+  [
+    {
+-     "attempts": 2,
+-     "body": "Gemini CLI 0.36.0 is older than 0.68.0, the oldest CodeDen supports.",
++     "attempts": 3,
++     "automationRunId": null,
++     "body": "Could not open the session: Gemini CLI 0.36.0 is older than 0.68.0, the oldest CodeDen supports.",
++     "createdAt": "2026-01-15T09:00:00.010Z",
+      "id": "inbox:6c08901e-7e9b-4d35-aef4-20e64ea16e55:process:4",
++     "issue": null,
++     "itemId": null,
++     "kind": "run_failed",
++     "notify": "failure",
++     "pr": null,
++     "priority": "normal",
++     "projectId": "p-app",
++     "requestId": null,
++     "resolution": null,
++     "resolvedAt": null,
++     "sessionId": "6c08901e-7e9b-4d35-aef4-20e64ea16e55",
++     "status": "open",
++     "threadId": null,
++     "title": "Run failed: Fix the parser",
++     "updatedAt": "2026-01-15T09:00:00.011Z",
+    },
+  ]
+
+ ❯ test/factory-run-failed-inbox.test.ts:417:29
+    415|     });
+    416|     expect(env.inbox.counts().open).toBe(before);
+    417|     expect(runFailed(s.id)).toEqual([
+       |                             ^
+    418|       expect.objectContaining({ id: failed?.id, attempts: 2, body: TOO…
+    419|     ]);
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/4]⎯
+
+ FAIL  |@codeden/server| test/checks-loop-rounds.test.ts > the checks loop's round count (#412) > starts the count again on a new user message
+Error: timed out
+ ❯ until test/support/checks-env.ts:276:38
+    274|   const deadline = Date.now() + 10_000;
+    275|   while (!check()) {
+    276|     if (Date.now() > deadline) throw new Error("timed out");
+       |                                      ^
+    277|     await wait(5);
+    278|   }
+ ❯ test/checks-loop-rounds.test.ts:88:5
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/4]⎯
+
+ FAIL  |@codeden/server| test/checks-loop-rounds.test.ts > the checks loop's round count (#412) > starts the count again when the user switches the loop off and on
+Error: timed out
+ ❯ until test/support/checks-env.ts:276:38
+    274|   const deadline = Date.now() + 10_000;
+    275|   while (!check()) {
+    276|     if (Date.now() > deadline) throw new Error("timed out");
+       |                                      ^
+    277|     await wait(5);
+    278|   }
+ ❯ test/checks-loop-rounds.test.ts:100:5
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/4]⎯
+
+ FAIL  |@codeden/server| test/factory-run-failed-inbox.test.ts > Retry of a failed run (#275) > that fails again updates the same item in place
+AssertionError: expected [ { …(20) } ] to deeply equal [ ObjectContaining{…} ]
+
+- Expected
++ Received
+
+  [
+    {
+-     "attempts": 2,
+-     "body": "Gemini CLI 0.36.0 is older than 0.68.0, the oldest CodeDen supports.",
++     "attempts": 3,
++     "automationRunId": null,
++     "body": "Could not open the session: Gemini CLI 0.36.0 is older than 0.68.0, the oldest CodeDen supports.",
++     "createdAt": "2026-01-15T09:00:00.011Z",
+      "id": "inbox:d41938c8-7a53-4a1e-bde4-87f44d7a8d34:process:4",
++     "issue": null,
++     "itemId": null,
++     "kind": "run_failed",
++     "notify": "failure",
++     "pr": null,
++     "priority": "normal",
++     "projectId": "p-app",
++     "requestId": null,
++     "resolution": null,
++     "resolvedAt": null,
++     "sessionId": "d41938c8-7a53-4a1e-bde4-87f44d7a8d34",
++     "status": "open",
++     "threadId": null,
++     "title": "Run failed: Fix the parser",
++     "updatedAt": "2026-01-15T09:00:00.012Z",
+    },
+  ]
+
+ ❯ test/factory-run-failed-inbox.test.ts:417:29
+    415|     });
+    416|     expect(env.inbox.counts().open).toBe(before);
+    417|     expect(runFailed(s.id)).toEqual([
+       |                             ^
+    418|       expect.objectContaining({ id: failed?.id, attempts: 2, body: TOO…
+    419|     ]);
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[4/4]⎯
+
+
+ Test Files  3 failed | 3 passed (6)
+      Tests  4 failed | 69 passed (73)
+   Start at  09:57:20
+   Duration  25.00s (tests 82%, transform 12%, import 6%)
+
