@@ -73,6 +73,9 @@ export class QueueService {
   /** The queued message, or 409 `already_sent` / 404 when it is no longer queued. */
   private require(sessionId: string, messageId: string): QueuedMessage {
     this.deps.repo.get(sessionId);
+    if (this.deps.repo.find(sessionId)?.startMeta?.pmDelivery?.queuedId === messageId) {
+      throw conflict("This message is already being delivered", "already_sent");
+    }
     const message = this.deps.outbox.get(sessionId, messageId);
     if (message) return message;
     const reason = this.deps.outbox.dequeuedReason(sessionId, messageId);

@@ -15,6 +15,7 @@ import {
   type SessionTranscriptExport,
   StartSessionRequest,
   SteerRequest,
+  SwitchPmProviderRequest,
   ThreadItemsQuery,
   type ToolOutputResponse,
   UpdateSessionRequest,
@@ -81,6 +82,9 @@ export function sessionRoutes(s: AppServices, installToken: string) {
         );
         return c.json(body);
       })
+      .post("/:id/switch-provider", jsonBody(SwitchPmProviderRequest), async (c) =>
+        c.json(await s.sessions.switchPmProvider(c.req.param("id"), c.req.valid("json"))),
+      )
       // A new session, on any provider, with this one's code and a brief of its work (§9).
       .post("/:id/handoff", jsonBody(HandoffSessionRequest), async (c) => {
         const body: HandoffSessionResponse = await s.sessions.handoff(

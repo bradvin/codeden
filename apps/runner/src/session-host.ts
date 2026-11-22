@@ -13,12 +13,23 @@ import {
 import { CommandError } from "./errors";
 import { createCheckpoint, nextCheckpointIndex } from "./git/checkpoints";
 import { cwdMissing, isWorkTree } from "./git/exec";
+import { pmTranscriptEvent } from "./pm-transcript";
 import { agentSessionOptions } from "./session-env";
 
 export { CommandError };
 
 interface Hosted {
   providerId: string;
+  pm: boolean;
+  runtimeId?: string;
+  transcriptRootId?: string;
+  model?: string | null;
+  configuredModel?: string | null;
+  defaultModel?: string;
+  sending?: boolean;
+  acceptedDelivery?: string;
+  pendingDelivery?: string;
+  contextPrefix?: string;
   session: ProviderSession;
   state: RunnerSessionInfo["state"];
   rootThreadId: string | undefined;
@@ -69,6 +80,7 @@ export class SessionHost {
       providerId: h.providerId,
       state: h.state,
       resumeToken: h.session.resumeToken() ?? null,
+      runtimeId: h.runtimeId,
     }));
   }
 
@@ -88,7 +100,53 @@ export class SessionHost {
    * conversation twice (one of them with an MCP token the server has retired).
    */
   async start(cmd: RunnerCommandOf<"session.start">): Promise<{ resumeToken: string | null }> {
-    if (this.sessions.has(cmd.sessionId) || this.opening.has(cmd.sessionId)) {
+    return this.open(cmd);
+  }
+
+  async replacePm(
+    cmd: RunnerCommandOf<"session.replacePm">,
+  ): Promise<{ resumeToken: string | null; reused: boolean }> {
+    const current = this.sessions.get(cmd.sessionId);
+    if (current?.runtimeId === cmd.runtimeId) {
+      return { resumeToken: current.session.resumeToken() ?? null, reused: true };
+    }
+    if (
+      current &&
+      (current.runtimeId !== cmd.previousRuntimeId || current.state !== "idle" || current.sending)
+    ) {
+      throw new CommandError(
+        "turn_running",
+        "Wait for the project manager's current turn to finish",
+      );
+    }
+    if (
+      cmd.options.role !== "pm" ||
+      !cmd.options.readOnly ||
+      !this.registry.get(cmd.providerId)?.capabilities().readOnly
+    ) {
+      throw new CommandError(
+        "read_only_unsupported",
+        "This provider cannot open a read-only project manager",
+      );
+    }
+    const result = await this.open(
+      {
+        ...cmd,
+        name: "session.start",
+        checkpoints: false,
+        options: { ...cmd.options, resumeToken: undefined },
+      },
+      cmd,
+    );
+    return { ...result, reused: false };
+  }
+
+  private async open(
+    cmd: RunnerCommandOf<"session.start">,
+    replacement?: RunnerCommandOf<"session.replacePm">,
+  ): Promise<{ resumeToken: string | null }> {
+    const previous = this.sessions.get(cmd.sessionId);
+    if ((!replacement && previous) || this.opening.has(cmd.sessionId)) {
       throw new CommandError("session_exists", `Session ${cmd.sessionId} is already running`);
     }
     const adapter = this.registry.get(cmd.providerId);
@@ -106,7 +164,14 @@ export class SessionHost {
     this.opening.add(cmd.sessionId);
     let hosted: Hosted;
     try {
-      this.emit({ kind: "session.process", sessionId: cmd.sessionId, state: "starting" });
+      if (!replacement) {
+        this.emit({
+          kind: "session.process",
+          sessionId: cmd.sessionId,
+          runtimeId: cmd.runtimeId,
+          state: "starting",
+        });
+      }
       let opened: ProviderSession;
       try {
         opened = await adapter.openSession(agentSessionOptions(cmd.options));
@@ -115,17 +180,25 @@ export class SessionHost {
         // How the provider classified it (a CLI too old, not signed in): the server keeps new
         // work off the provider instead of trying it again.
         const kind = error instanceof ProviderSessionError ? error.kind : undefined;
-        this.emit({
-          kind: "session.process",
-          sessionId: cmd.sessionId,
-          state: "crashed",
-          error: { code: "open_failed", message, ...(kind ? { kind } : {}) },
-        });
+        if (!replacement) {
+          this.emit({
+            kind: "session.process",
+            sessionId: cmd.sessionId,
+            runtimeId: cmd.runtimeId,
+            state: "crashed",
+            error: { code: "open_failed", message, ...(kind ? { kind } : {}) },
+          });
+        }
         throw new CommandError("open_failed", `Could not open the session: ${message}`);
       }
       const checkpoints = cmd.checkpoints !== false && (await isWorkTree(cmd.options.cwd));
       hosted = {
         providerId: cmd.providerId,
+        pm: cmd.options.role === "pm",
+        runtimeId: cmd.runtimeId,
+        transcriptRootId: cmd.transcriptRootId,
+        model: cmd.options.model ?? adapter.models().find((model) => model.isDefault)?.id,
+        defaultModel: adapter.models().find((model) => model.isDefault)?.id,
         session: opened,
         state: "idle",
         rootThreadId: undefined,
@@ -141,7 +214,26 @@ export class SessionHost {
     }
     const { session, checkpoints } = hosted;
     if (checkpoints) this.checkpoint(cmd.sessionId, hosted, undefined, true);
-    this.emit({ kind: "session.process", sessionId: cmd.sessionId, state: "ready" });
+    if (replacement) {
+      this.emit({
+        kind: "session.pmReplaced",
+        sessionId: cmd.sessionId,
+        runtimeId: replacement.runtimeId,
+        resumeToken: session.resumeToken() ?? null,
+        tokenId: replacement.tokenId,
+      });
+      if (previous)
+        void previous.session.close().catch((error: unknown) => {
+          this.opts.log?.(`closing retired project manager: ${String(error)}`);
+        });
+    } else {
+      this.emit({
+        kind: "session.process",
+        sessionId: cmd.sessionId,
+        runtimeId: cmd.runtimeId,
+        state: "ready",
+      });
+    }
     void this.pump(cmd.sessionId, hosted);
     if (cmd.input) {
       // The baseline must capture the tree before the first turn touches it.
@@ -153,20 +245,53 @@ export class SessionHost {
 
   async send(cmd: RunnerCommandOf<"session.send">): Promise<void> {
     const hosted = this.get(cmd.sessionId);
+    if (cmd.runtimeId !== hosted.runtimeId || this.opening.has(cmd.sessionId)) {
+      throw new CommandError("runtime_changed", "The project manager's provider is changing");
+    }
+    if (cmd.deliveryId && hosted.acceptedDelivery === cmd.deliveryId) return;
+    if (hosted.pm && (hosted.sending || (hosted.runtimeId && hosted.state === "running"))) {
+      throw new CommandError("turn_running", "A turn is already running");
+    }
+    hosted.sending = true;
     await hosted.checkpointChain;
+    hosted.pendingDelivery = cmd.deliveryId;
+    hosted.contextPrefix = cmd.priorContext ? `${cmd.priorContext}\n\n` : undefined;
     // A message's turn is work, never a compaction.
     const compactPending = hosted.compactPending;
     hosted.compactPending = false;
     try {
-      await hosted.session.send(cmd.input);
+      const input = hosted.contextPrefix
+        ? { ...cmd.input, text: hosted.contextPrefix + cmd.input.text }
+        : cmd.input;
+      await hosted.session.send(input);
+      this.acceptDelivery(cmd.sessionId, hosted);
     } catch (error) {
       // The server queues the message behind the running turn instead of failing the session.
       if (error instanceof ProviderSessionError && error.code === "turn_running") {
         hosted.compactPending = compactPending;
         throw new CommandError("turn_running", error.message);
       }
+      if (cmd.deliveryId) {
+        await pumped();
+        if (hosted.acceptedDelivery === cmd.deliveryId) return;
+      }
       throw error;
+    } finally {
+      hosted.sending = false;
+      hosted.pendingDelivery = undefined;
     }
+  }
+
+  private acceptDelivery(sessionId: string, hosted: Hosted): void {
+    const { runtimeId, pendingDelivery } = hosted;
+    if (!runtimeId || !pendingDelivery || hosted.acceptedDelivery === pendingDelivery) return;
+    this.emit({
+      kind: "session.pmInputAccepted",
+      sessionId,
+      runtimeId,
+      deliveryId: pendingDelivery,
+    });
+    hosted.acceptedDelivery = pendingDelivery;
   }
 
   async steer(cmd: RunnerCommandOf<"session.steer">): Promise<void> {
@@ -218,7 +343,8 @@ export class SessionHost {
    * change them live. Checks every requested setting before applying any.
    */
   async configure(cmd: RunnerCommandOf<"session.configure">): Promise<void> {
-    const { session } = this.get(cmd.sessionId);
+    const hosted = this.get(cmd.sessionId);
+    const { session } = hosted;
     const change: { model?: string | null; effort?: typeof cmd.effort } = {};
     if (cmd.model !== undefined) change.model = cmd.model;
     if (cmd.effort !== undefined) change.effort = cmd.effort;
@@ -233,13 +359,17 @@ export class SessionHost {
       throw new CommandError("unsupported", "This provider has no plan mode");
     }
     if (modelOrEffort) await session.configure?.(change);
+    if (cmd.model !== undefined) hosted.configuredModel = cmd.model ?? hosted.defaultModel ?? null;
     if (cmd.autonomy !== undefined) await session.setAutonomy?.(cmd.autonomy);
     if (cmd.planMode !== undefined) await session.setPlanMode?.(cmd.planMode);
   }
 
   async respond(cmd: RunnerCommandOf<"session.respond">): Promise<void> {
     try {
-      await this.get(cmd.sessionId).session.respond(cmd.requestId, cmd.response);
+      await this.get(cmd.sessionId).session.respond(
+        this.nativeRequestId(cmd.sessionId, cmd.requestId),
+        cmd.response,
+      );
     } catch (error) {
       // An answer the asker can't take (a form's "five" for a number): the request stays open
       // and the message says what fits.
@@ -294,6 +424,15 @@ export class SessionHost {
     }
   }
 
+  private nativeRequestId(sessionId: string, requestId: string): string {
+    const runtime = this.get(sessionId).runtimeId;
+    if (!runtime) return requestId;
+    const prefix = `${runtime}:`;
+    if (!requestId.startsWith(prefix))
+      throw new CommandError("unknown_request", "This request has ended");
+    return requestId.slice(prefix.length);
+  }
+
   private get(sessionId: string): Hosted {
     const hosted = this.sessions.get(sessionId);
     if (!hosted) throw new CommandError("unknown_session", `Session ${sessionId} is not running`);
@@ -327,16 +466,36 @@ export class SessionHost {
   private async pump(sessionId: string, hosted: Hosted): Promise<void> {
     try {
       for await (const raw of hosted.session.events) {
+        if (this.sessions.get(sessionId) !== hosted) break;
         const event = this.rewrite(hosted, raw);
         // Track first: a turn's end queues its checkpoint before the server hears the turn
         // ended, so anything it asks after that (`settled`) waits for that checkpoint.
         this.track(sessionId, hosted, event);
-        this.emit({ kind: "agent", sessionId, event });
+        if (event.type === "turn.started" && event.threadId === hosted.rootThreadId) {
+          this.acceptDelivery(sessionId, hosted);
+        }
+        this.emit({
+          kind: "agent",
+          sessionId,
+          runtimeId: hosted.runtimeId,
+          event:
+            hosted.runtimeId && hosted.transcriptRootId
+              ? pmTranscriptEvent(
+                  event,
+                  hosted.runtimeId,
+                  hosted.rootThreadId,
+                  hosted.transcriptRootId,
+                  hosted.contextPrefix,
+                )
+              : event,
+        });
       }
       await hosted.checkpointChain;
+      if (this.sessions.get(sessionId) !== hosted) return;
       this.emit({
         kind: "session.process",
         sessionId,
+        runtimeId: hosted.runtimeId,
         state: "exited",
         exitCode: 0,
         reason: hosted.closeReason ?? "ended",
@@ -345,15 +504,17 @@ export class SessionHost {
           : {}),
       });
     } catch (error) {
+      if (this.sessions.get(sessionId) !== hosted) return;
       const message = error instanceof Error ? error.message : String(error);
       this.emit({
         kind: "session.process",
         sessionId,
+        runtimeId: hosted.runtimeId,
         state: "crashed",
         error: { code: "provider_crashed", message },
       });
     } finally {
-      this.sessions.delete(sessionId);
+      if (this.sessions.get(sessionId) === hosted) this.sessions.delete(sessionId);
     }
   }
 
@@ -362,6 +523,14 @@ export class SessionHost {
    * a compaction starts is marked as one.
    */
   private rewrite(hosted: Hosted, event: AgentEvent): AgentEvent {
+    if (event.type === "session.updated" && event.model !== undefined) hosted.model = event.model;
+    if (event.type === "turn.started") {
+      if (hosted.configuredModel !== undefined) {
+        hosted.model = hosted.configuredModel;
+        hosted.configuredModel = undefined;
+      }
+      event = { ...event, provider: hosted.providerId, model: hosted.model };
+    }
     if (
       hosted.compactPending &&
       event.type === "turn.started" &&

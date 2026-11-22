@@ -63,7 +63,7 @@ export class NoticeDelivery {
   constructor(private readonly deps: NoticeDeliveryDeps) {}
 
   /** Prepend the status digest and the undelivered notices to a role session's input (§8.4). */
-  decorate(session: Session, input: UserInput): DecoratedInput {
+  decorate(session: Session, input: UserInput, durable = false): DecoratedInput {
     if (session.role === "agent") return { input };
     try {
       const parts = [this.deps.digestFor(session)];
@@ -76,6 +76,7 @@ export class NoticeDelivery {
       parts.push(...(pending.length > 0 ? [renderNotices(pending, this.deps.projectName)] : []));
       parts.push(input.text);
       const ids = pending.map((n) => n.id);
+      if (durable) return { input: { ...input, text: parts.join("\n\n") }, noticeIds: ids };
       for (const id of ids) this.claimed.add(id);
       if (pending.length > 0) this.deps.cards.add(session.id, pending);
       const release = () => {

@@ -263,6 +263,16 @@ export type SessionTranscriptExport = z.infer<typeof SessionTranscriptExport>;
 /** Longest note a handoff passes on ("What should it do next?"). */
 export const HANDOFF_NOTE_MAX = 4_000;
 
+/** `POST /api/sessions/:id/switch-provider`: select a fresh runtime for an existing project PM. */
+export const SwitchPmProviderRequest = z.strictObject({
+  provider: ProviderId,
+  /** Null chooses the target provider's default. */
+  model: z.string().trim().min(1).max(256).nullable(),
+  /** Null chooses the model's default. */
+  effort: ReasoningEffort.nullable(),
+});
+export type SwitchPmProviderRequest = z.infer<typeof SwitchPmProviderRequest>;
+
 /**
  * `POST /api/sessions/:id/handoff`: continue an agent session in a new one, on any provider
  * (§9). The new session gets the source's code as a fork does (a new branch from the source's

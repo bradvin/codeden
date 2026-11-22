@@ -17,11 +17,32 @@ import { CheckpointIndex, PtyId } from "./commands";
  */
 export const RunnerEvent = z.discriminatedUnion("kind", [
   /** A normalized agent event for a session. */
-  z.object({ kind: z.literal("agent"), sessionId: Id, event: AgentEvent }),
+  z.object({
+    kind: z.literal("agent"),
+    sessionId: Id,
+    runtimeId: Id.optional(),
+    event: AgentEvent,
+  }),
+  /** A newly selected PM runtime is ready. It precedes that runtime's agent events. */
+  z.object({
+    kind: z.literal("session.pmReplaced"),
+    sessionId: Id,
+    runtimeId: Id,
+    resumeToken: z.string().nullable(),
+    tokenId: Id.optional(),
+  }),
+  /** The runner accepted this delivery on the selected PM runtime. */
+  z.object({
+    kind: z.literal("session.pmInputAccepted"),
+    sessionId: Id,
+    runtimeId: Id,
+    deliveryId: Id,
+  }),
   /** Provider process lifecycle for a session. */
   z.object({
     kind: z.literal("session.process"),
     sessionId: Id,
+    runtimeId: Id.optional(),
     state: z.enum(["starting", "ready", "exited", "crashed"]),
     exitCode: z.int().nullable().optional(),
     error: ErrorInfo.optional(),

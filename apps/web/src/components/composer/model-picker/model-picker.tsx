@@ -53,6 +53,8 @@ export interface ModelPickerProps {
    * `lasting` that it won't lift on its own.
    */
   handoff?: HandoffState & { onHandoff: (providerId: string) => void };
+  /** Stage a different provider until the model and effort have been chosen. */
+  switchBlocked?: (provider: ProviderInfo) => string | null;
   /** Offer effort levels beside the list (default true). */
   effort?: boolean;
   disabled?: boolean;
@@ -77,6 +79,7 @@ export function ModelPicker({
   onChange,
   lockedProvider,
   handoff,
+  switchBlocked,
   effort: offerEffort = true,
   disabled,
   placeholder = "Choose a model",
@@ -102,6 +105,7 @@ export function ModelPicker({
     setOptimistic(null);
   }
   const shown = optimistic ?? value;
+  const stagedSwitch = switchBlocked && shown && shown.provider !== lockedProvider ? shown : null;
 
   const { favorites, toggle: toggleFavorite } = useFavoriteModels();
   const { hidden, toggle: toggleHidden } = useHiddenModels();
@@ -110,6 +114,7 @@ export function ModelPicker({
   const providers = withCustomModels(listed, custom);
   const tabs = providerTabs(providers, checks, lockedProvider, {
     favorites: true,
+    switchBlocked,
     ...(handoff ? { handoff: { blocked: handoff.blocked, lasting: handoff.lasting } } : {}),
   });
   const openTabs = openProviderTabs(tabs);
@@ -199,7 +204,7 @@ export function ModelPicker({
 
   const commit = (next: ModelChoice) => {
     setOptimistic(next);
-    onChange(next);
+    if (!switchBlocked || next.provider === lockedProvider) onChange(next);
   };
 
   const pick = (row: ModelRow) => {
@@ -210,14 +215,14 @@ export function ModelPicker({
     commit(next);
     if (showColumn && effortLevels(row.provider, row.model).length > 0) {
       requestAnimationFrame(() => focusEffort(contentRef.current));
-    } else {
+    } else if (!switchBlocked || next.provider === lockedProvider) {
       setOpen(false);
     }
   };
 
   const pickEffort = (level: ReasoningEffort) => {
     if (shown) commit({ ...shown, effort: level });
-    setOpen(false);
+    if (!stagedSwitch) setOpen(false);
   };
 
   const toEffort = () => {
@@ -363,6 +368,21 @@ export function ModelPicker({
                 onBack={() => inputRef.current?.focus()}
               />
             )}
+          </div>
+        )}
+        {stagedSwitch && (
+          <div className="flex justify-end border-t border-border px-2 py-1.5">
+            <button
+              className="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground"
+              type="button"
+              disabled={tabs.some((t) => t.id === stagedSwitch.provider && t.lockedReason)}
+              onClick={() => {
+                onChange(stagedSwitch);
+                openPicker(false);
+              }}
+            >
+              Switch to {provider?.displayName}
+            </button>
           </div>
         )}
         {footer && (

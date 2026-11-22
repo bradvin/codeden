@@ -174,6 +174,8 @@ export const turns = sqliteTable(
     error: json<ErrorInfo>("error"),
     /** Usage reported for this turn (latest `usage.updated` with this turnId). */
     usage: json<Usage>("usage"),
+    provider: text("provider"),
+    model: text("model"),
     /** The provider's fork point at the end of the turn (`forkPoint` on its end event, §9). */
     forkPoint: text("fork_point"),
     /** What the turn was for (`TurnKind`, from its `turn.started`); null: `work`. */

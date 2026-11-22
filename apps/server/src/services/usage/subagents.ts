@@ -8,7 +8,7 @@ import type {
 } from "@codeden/contracts";
 import { and, eq } from "drizzle-orm";
 import type { Db } from "../../db/client";
-import { items } from "../../db/schema";
+import { items, turns, usageLedger } from "../../db/schema";
 import { costOf, findPrice } from "./prices";
 
 /** The session a subagent ran in: its provider, and the model its runs use unless they say. */
@@ -79,14 +79,28 @@ export function subagentCosts(
   overrides: ModelPrice[],
 ): SubagentCost[] {
   const rows = db
-    .select({ data: items.data })
+    .select({
+      data: items.data,
+      turnProvider: turns.provider,
+      turnModel: turns.model,
+      ledgerProvider: usageLedger.provider,
+      ledgerModel: usageLedger.model,
+    })
     .from(items)
+    .leftJoin(turns, and(eq(turns.sessionId, items.sessionId), eq(turns.id, items.turnId)))
+    .leftJoin(
+      usageLedger,
+      and(eq(usageLedger.sessionId, items.sessionId), eq(usageLedger.turnId, items.turnId)),
+    )
     .where(and(eq(items.sessionId, sessionId), eq(items.kind, "subagent")))
     .all();
   const out: SubagentCost[] = [];
-  for (const { data } of rows) {
-    const usage = finishedUsage(data);
-    if (usage) out.push(priceSubagent(data.id, usage, session, overrides));
+  for (const row of rows) {
+    const usage = finishedUsage(row.data);
+    if (!usage) continue;
+    const provider = row.turnProvider ?? row.ledgerProvider ?? session.provider;
+    const model = row.turnProvider ? row.turnModel : (row.ledgerModel ?? session.model);
+    out.push(priceSubagent(row.data.id, usage, { provider, model }, overrides));
   }
   return out;
 }

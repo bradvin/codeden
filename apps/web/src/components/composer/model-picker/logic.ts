@@ -269,14 +269,20 @@ export function providerTabs(
   providers: readonly ProviderInfo[],
   checks: readonly SetupCheck[] | undefined,
   lockedProvider: string | undefined,
-  opts: { favorites?: boolean; handoff?: HandoffState } = {},
+  opts: {
+    favorites?: boolean;
+    handoff?: HandoffState;
+    switchBlocked?: (provider: ProviderInfo) => string | null;
+  } = {},
 ): PickerTab[] {
   const tabs: PickerTab[] = providers.map((provider) => ({
     kind: "provider" as const,
     id: provider.id,
     provider,
     availability: providerAvailability(provider.id, checks),
-    ...lockedTab(provider, lockedProvider, opts.handoff),
+    ...(opts.switchBlocked && provider.id !== lockedProvider
+      ? { lockedReason: opts.switchBlocked(provider) }
+      : lockedTab(provider, lockedProvider, opts.handoff)),
   }));
   return opts.favorites
     ? [{ kind: "favorites", id: FAVORITES_TAB, lockedReason: null }, ...tabs]

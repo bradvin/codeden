@@ -55,6 +55,7 @@ import type {
   SpeechSummaryResponse,
   StartSessionRequestInit,
   StartSessionResponse,
+  SwitchPmProviderRequest,
   ToolOutputResponse,
   TranscriptMessage,
   TranscriptSearchResponse,
@@ -178,6 +179,7 @@ export interface CodeDenClient {
    * A new session, on any provider, with this one's code as a fork has it and a brief of its
    * work as its first message instead of the conversation (§9). The source is left as it is.
    */
+  switchPmProvider(sessionId: string, req: SwitchPmProviderRequest): Promise<Session>;
   handoffSession(sessionId: string, req: HandoffSessionRequest): Promise<HandoffSessionResponse>;
   /**
    * Review a session's changes (§9): a new read-only session, on the chosen provider, with its

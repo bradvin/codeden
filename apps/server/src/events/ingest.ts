@@ -8,6 +8,7 @@ import {
 import { eq } from "drizzle-orm";
 import type { Db } from "../db/client";
 import { runnerState } from "../db/schema";
+import { pmRuntimeEvents } from "./pm-runtime-events";
 import { derivedEvents } from "./projection-db";
 import { reduceProcessEvent } from "./reducer/process";
 import type { ProjectionReader } from "./reducer/types";
@@ -25,6 +26,9 @@ export function runnerEventToNewEvents(
 ): NewEvent[] {
   const event = msg.event;
   switch (event.kind) {
+    case "session.pmReplaced":
+    case "session.pmInputAccepted":
+      return [];
     case "agent":
       return [agentEventToNewEvent(event.sessionId, event.event)];
     case "session.process":
@@ -86,6 +90,8 @@ export function runnerEventToNewEvents(
 /** The session a runner event is about; `null` for runner-level events. */
 export function runnerEventSessionId(event: RunnerEvent): string | null {
   switch (event.kind) {
+    case "session.pmReplaced":
+    case "session.pmInputAccepted":
     case "agent":
     case "session.process":
     case "workspace.setup":
@@ -174,11 +180,13 @@ export function ingestRunnerEvent(
   // Set inside the transaction; `as` keeps TypeScript from narrowing it to `null` here.
   let refused = null as string | null;
   const events = store.appendFrom(
-    (reader) => {
+    (reader, tx) => {
       refused = source.untrusted
         ? untrustedEventRefusal(reader, msg.event, runnerId, source.ownsPty)
         : null;
-      return refused ? [] : runnerEventToNewEvents(reader, msg, runnerId, source.recordId);
+      if (refused) return [];
+      const pmEvents = pmRuntimeEvents(tx, reader, msg, source.untrusted ?? false);
+      return pmEvents ?? runnerEventToNewEvents(reader, msg, runnerId, source.recordId);
     },
     (tx) => {
       tx.insert(runnerState)

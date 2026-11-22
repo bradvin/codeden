@@ -58,6 +58,7 @@ export function reduceAgentEvent(
       break;
     case "turn.started": {
       const existing = d.getTurn(sessionId, event.turnId);
+      const session = d.getSession(sessionId)?.session;
       d.putTurn({
         ...(existing ?? { usage: null, error: null }),
         id: event.turnId,
@@ -68,6 +69,12 @@ export function reduceAgentEvent(
         completedAt: null,
         forkPoint: null,
         kind: event.kind ?? existing?.kind ?? null,
+        provider: existing?.provider ?? event.provider ?? session?.provider ?? null,
+        model: existing?.provider
+          ? existing.model
+          : event.model !== undefined
+            ? event.model
+            : (session?.model ?? null),
       });
       if (isRootThread(d, sessionId, event.threadId)) setStatus(d, sessionId, "running", ts);
       break;

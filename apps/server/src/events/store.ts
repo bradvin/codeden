@@ -42,10 +42,10 @@ export class EventStore {
    * projections (for changes that depend on state, e.g. provider process lifecycle).
    */
   appendFrom(
-    build: (reader: ProjectionReader) => NewEvent[],
+    build: (reader: ProjectionReader, tx: Tx) => NewEvent[],
     extra?: (tx: Tx) => void,
   ): RawEventEnvelope[] {
-    return this.transact((tx) => build(new DbProjectionReader(tx)), extra);
+    return this.transact((tx) => build(new DbProjectionReader(tx), tx), extra);
   }
 
   /** Events with `seq > afterSeq`, oldest first. Session filter keeps global events too. */

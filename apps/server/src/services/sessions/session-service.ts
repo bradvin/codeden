@@ -19,6 +19,7 @@ import type {
   SessionDetail,
   StartSessionRequest,
   StartSessionResponse,
+  SwitchPmProviderRequest,
   UpdateSessionRequest,
   UserInput,
   WorkspaceRequest,
@@ -45,11 +46,13 @@ import { compactingRefusal, compactionRunning, compactRefusal, startCompaction }
 import { derivePurpose, deriveWorkKey, findConflicts } from "./conflicts";
 import { planFork } from "./fork";
 import { planHandoff } from "./handoff";
-import type { InputDecorator } from "./input-decorator";
+import { type InputDecorator, mayHaveStarted } from "./input-decorator";
 import type { LaunchFork, SessionLauncher } from "./launcher";
 import type { Outbox } from "./outbox";
 import { isTransientRunnerError, isTurnRunningError, OutboxHolds } from "./outbox-holds";
 import { planModeUnsupported, readOnlyUnsupported } from "./permissions";
+import { PmProviderSwitch } from "./pm-provider-switch";
+import type { PmDelivery } from "./pm-runtime-state";
 import type { Answerer, QuestionBroker } from "./questions";
 import { applyPendingConfig, updateSession } from "./reconfigure";
 import type { SessionRepo, StoredStartMeta } from "./repo";
@@ -110,6 +113,9 @@ export class SessionService {
   private inputDecorator: InputDecorator | undefined;
   private checkRuns: CheckRuns | undefined;
   private readonly holds: OutboxHolds;
+  private readonly pmSwitch: PmProviderSwitch;
+  private pmSwitchSettled?: () => void;
+  private readonly pmActions = new Set<string>();
   /**
    * Sessions with a turn on its way to the runner (between the status check and the runner's
    * answer). Another message for one of them waits in the queue instead of racing it into a
@@ -118,10 +124,62 @@ export class SessionService {
   private readonly delivering = new Set<string>();
 
   constructor(private readonly deps: SessionServiceDeps) {
+    this.pmSwitch = new PmProviderSwitch({
+      ...deps,
+      delivering: (id) => this.isDelivering(id) || this.launching.has(id) || this.pmActions.has(id),
+      settled: (id) => {
+        if (this.deps.repo.find(id)?.startMeta?.pmSwitch) return;
+        this.holds.release(id);
+        this.flushIfSettled(id);
+        this.pmSwitchSettled?.();
+      },
+    });
     this.holds = new OutboxHolds({
       retryMs: deps.outboxRetryMs,
       onRetry: (id) => void this.flushOutbox(id).catch(() => undefined),
     });
+  }
+
+  switchPmProvider(id: string, req: SwitchPmProviderRequest): Promise<Session> {
+    return this.pmSwitch.change(id, req);
+  }
+
+  setPmSwitchSettled(fn: () => void): void {
+    this.pmSwitchSettled = fn;
+  }
+
+  async recoverPmRuntime(id: string): Promise<void> {
+    await this.pmSwitch.recover(id);
+    if (this.deps.repo.find(id)?.startMeta?.pmDelivery) {
+      await this.flushOutbox(id);
+    }
+  }
+
+  private assertPmSettled(id: string): void {
+    const { startMeta } = this.deps.repo.find(id) ?? {};
+    if (startMeta?.pmSwitch) {
+      throw conflict(
+        "Wait for the project manager's provider switch or retry it in the model picker",
+        "pm_switch_pending",
+      );
+    }
+    if (startMeta?.pmDelivery) {
+      throw conflict("Wait for the project manager's message delivery to finish", "turn_running");
+    }
+  }
+
+  /** A switch may start only after a PM lifecycle or settings command settles. */
+  private async pmAction<T>(id: string, action: () => Promise<T>): Promise<T> {
+    if (this.deps.repo.get(id).role !== "pm") return action();
+    if (this.pmActions.has(id))
+      throw conflict("Wait for the project manager's current action to finish", "turn_running");
+    this.pmActions.add(id);
+    try {
+      return await action();
+    } finally {
+      this.pmActions.delete(id);
+      this.flushIfSettled(id);
+    }
   }
 
   setInputDecorator(fn: InputDecorator): void {
@@ -138,6 +196,7 @@ export class SessionService {
    * or title.
    */
   update(id: string, req: UpdateSessionRequest): Promise<Session> {
+    this.assertPmSettled(id);
     if (req.untilChecksPass !== undefined || req.checkRounds !== undefined) {
       const session = this.deps.repo.get(id);
       if (session.role !== "agent" || !session.checks?.commands.length) {
@@ -156,7 +215,10 @@ export class SessionService {
         this.assertPlanModeSupported(session.role, session.provider, id);
       }
     }
-    return updateSession(this.deps.repo, this.runnerOf(id), id, req);
+    const update = () => updateSession(this.deps.repo, this.runnerOf(id), id, req);
+    return req.autonomy !== undefined || req.planMode !== undefined
+      ? this.pmAction(id, update)
+      : update();
   }
 
   /**
@@ -329,9 +391,20 @@ export class SessionService {
     from: QueueSender = "user",
   ): Promise<SendMessageResponse> {
     const session = this.deps.repo.get(id);
+    const meta = session.role === "pm" ? this.deps.repo.find(id)?.startMeta : undefined;
+    if (meta?.pmSwitch || meta?.pmDelivery) {
+      if (req.whenBusy === "reject")
+        throw conflict(
+          "The project manager is finishing a provider switch or delivery",
+          "turn_running",
+        );
+      const queued = this.enqueue(id, req.input, from);
+      if (!meta.pmSwitch) this.flushIfSettled(id);
+      return queued;
+    }
     if (NOT_STARTED.has(session.status)) return this.enqueue(id, req.input, from);
     // A turn on its way to the runner counts as running, though there is nothing to steer yet.
-    const delivering = this.delivering.has(id);
+    const delivering = this.delivering.has(id) || this.pmActions.has(id);
     if (BUSY.has(session.status) || delivering) {
       if (req.whenBusy === "reject") throw conflict("A turn is running", "turn_running");
       if (req.whenBusy === "steer" && !delivering) {
@@ -345,11 +418,26 @@ export class SessionService {
       }
       return this.enqueue(id, req.input, from);
     }
+    if (meta?.pmRuntimeId && this.hasOutbox(id) && FLUSHABLE.has(session.status)) {
+      if (req.whenBusy === "reject")
+        throw conflict("The project manager has queued messages", "turn_running");
+      const queued = this.enqueue(id, req.input, from);
+      if (from === "user") this.holds.release(id);
+      this.flushIfSettled(id);
+      return queued;
+    }
     // Its place in the queue, should it end up there: ahead of messages that arrive meanwhile.
     const place = this.deps.outbox.reserve();
     try {
       await this.sendNow(session, req.input, from);
     } catch (error) {
+      if (
+        meta?.pmRuntimeId &&
+        req.whenBusy !== "reject" &&
+        this.deps.repo.find(id)?.startMeta?.pmDelivery
+      ) {
+        return { status: "queued" };
+      }
       // The provider is still running a turn the server had not seen: the message waits for it.
       if (isTurnRunningError(error)) {
         if (req.whenBusy === "reject") throw conflict("A turn is running", "turn_running");
@@ -385,15 +473,18 @@ export class SessionService {
   }
 
   async interrupt(id: string): Promise<void> {
-    this.deps.repo.get(id);
-    this.deps.outbox.clear(id);
-    // Between turns, Stop ends the session's check run: no turn is running to interrupt.
-    if (await this.checkRuns?.cancel(id, "stopped")) return;
-    await this.runnerOf(id)
-      .request({ name: "session.interrupt", sessionId: id })
-      .catch((e) => {
-        throw toServiceError(e);
-      });
+    this.assertPmSettled(id);
+    return this.pmAction(id, async () => {
+      this.deps.repo.get(id);
+      this.deps.outbox.clear(id);
+      // Between turns, Stop ends the session's check run: no turn is running to interrupt.
+      if (await this.checkRuns?.cancel(id, "stopped")) return;
+      await this.runnerOf(id)
+        .request({ name: "session.interrupt", sessionId: id })
+        .catch((e) => {
+          throw toServiceError(e);
+        });
+    });
   }
 
   /**
@@ -403,6 +494,7 @@ export class SessionService {
    * meanwhile queue behind it.
    */
   async compact(id: string): Promise<CompactSessionResponse> {
+    this.assertPmSettled(id);
     const session = this.deps.repo.get(id);
     const refusal = compactRefusal(session, this.provider(session.provider, id), {
       delivering: this.delivering.has(id),
@@ -454,25 +546,28 @@ export class SessionService {
    * its status.
    */
   async stop(id: string): Promise<Session> {
-    const session = this.deps.repo.get(id);
-    this.deps.outbox.clear(id);
-    this.holds.release(id);
-    if (session.status !== "queued" && session.status !== "created") {
-      try {
-        await this.runnerOf(id).request({ name: "session.stop", sessionId: id }, 15_000);
-      } catch (error) {
-        const code = runnerErrorCode(error);
-        if (code !== "unknown_session" && code !== "runner_unavailable")
-          throw toServiceError(error);
+    this.assertPmSettled(id);
+    return this.pmAction(id, async () => {
+      const session = this.deps.repo.get(id);
+      this.deps.outbox.clear(id);
+      this.holds.release(id);
+      if (session.status !== "queued" && session.status !== "created") {
+        try {
+          await this.runnerOf(id).request({ name: "session.stop", sessionId: id }, 15_000);
+        } catch (error) {
+          const code = runnerErrorCode(error);
+          if (code !== "unknown_session" && code !== "runner_unavailable")
+            throw toServiceError(error);
+        }
       }
-    }
-    // The provider process is gone, so its tokens go too (§8.3), whatever status the session
-    // keeps: a failed session isn't revoked by the lifecycle. Resuming mints a new token.
-    this.deps.tokens.revokeSession(id);
-    this.deps.inbox.dismissRequestsForSession(id, "session stopped");
-    return this.deps.repo.update(id, (s) =>
-      FINISHED.has(s.status) ? s : { ...s, status: "stopped", endedAt: new Date().toISOString() },
-    );
+      // The provider process is gone, so its tokens go too (§8.3), whatever status the session
+      // keeps: a failed session isn't revoked by the lifecycle. Resuming mints a new token.
+      this.deps.tokens.revokeSession(id);
+      this.deps.inbox.dismissRequestsForSession(id, "session stopped");
+      return this.deps.repo.update(id, (s) =>
+        FINISHED.has(s.status) ? s : { ...s, status: "stopped", endedAt: new Date().toISOString() },
+      );
+    });
   }
 
   /**
@@ -482,11 +577,18 @@ export class SessionService {
    * turn still running on the runner is no error: the message waits for its end.
    */
   async flushOutbox(id: string): Promise<void> {
-    if (this.holds.isHeld(id) || this.delivering.has(id)) return;
+    if (this.holds.isHeld(id) || this.delivering.has(id) || this.pmActions.has(id)) return;
+    const meta = this.deps.repo.find(id)?.startMeta;
+    if (meta?.pmSwitch) return;
     const next = this.deps.outbox.peek(id);
-    if (!next) return;
+    if (!next && !meta?.pmDelivery) return;
     const session = this.deps.repo.get(id);
-    if (!FLUSHABLE.has(session.status)) return;
+    if (!FLUSHABLE.has(session.status) && !meta?.pmDelivery) return;
+    if (meta?.pmRuntimeId) {
+      await this.flushPmDelivery(session, next, meta.pmDelivery);
+      return;
+    }
+    if (!next) return;
     this.deps.outbox.remove(next, "sent");
     try {
       await this.sendNow(session, next.input, next.from);
@@ -505,6 +607,23 @@ export class SessionService {
     }
   }
 
+  private async flushPmDelivery(
+    session: Session,
+    next: ReturnType<Outbox["peek"]>,
+    pending: PmDelivery | undefined,
+  ): Promise<void> {
+    const delivery = pending ?? (next && { input: next.input, from: next.from, queuedId: next.id });
+    if (!delivery) return;
+    try {
+      await this.sendNow(session, delivery.input, delivery.from, delivery.queuedId, pending?.id);
+    } catch (error) {
+      const retry = mayHaveStarted(error) || isTurnRunningError(error);
+      this.holds.hold(session.id, retry);
+      if (!retry && session.status !== "failed")
+        this.deps.launcher.fail(session.id, `send-${Date.now()}`, error);
+    }
+  }
+
   /** A runner is ready again: retry the paused deliveries of its sessions (§4.2). */
   releaseOutboxes(which?: (sessionId: string) => boolean): void {
     this.holds.releaseAll(which);
@@ -512,7 +631,7 @@ export class SessionService {
 
   /** A turn is on its way to the runner for this session (sent, the runner hasn't answered). */
   isDelivering(id: string): boolean {
-    return this.delivering.has(id);
+    return this.delivering.has(id) || !!this.deps.repo.find(id)?.startMeta?.pmDelivery;
   }
 
   /**
@@ -541,7 +660,8 @@ export class SessionService {
    * Returns how many were dropped.
    */
   dropQueued(id: string, from: QueueSender): number {
-    const mine = this.deps.outbox.list(id).filter((m) => m.from === from);
+    const inFlight = this.deps.repo.find(id)?.startMeta?.pmDelivery?.queuedId;
+    const mine = this.deps.outbox.list(id).filter((m) => m.from === from && m.id !== inFlight);
     for (const m of mine) this.deps.outbox.remove(m, "dropped");
     return mine.length;
   }
@@ -552,12 +672,24 @@ export class SessionService {
    * Start a turn. Marks the session `delivering` before anything is awaited; messages queued
    * meanwhile are delivered once it is settled again (`flushIfSettled`).
    */
-  private async sendNow(session: Session, raw: UserInput, from: QueueSender): Promise<void> {
+  private async sendNow(
+    session: Session,
+    raw: UserInput,
+    from: QueueSender,
+    queuedId?: string,
+    retryId?: string,
+  ): Promise<void> {
     this.delivering.add(session.id);
     try {
       // A new message takes over from a check run; the loop's own message comes after its run.
       await this.checkRuns?.cancel(session.id, "superseded");
       this.countChecksRound(session.id, raw, from);
+      const meta = this.deps.repo.find(session.id)?.startMeta;
+      if (retryId && retryId !== meta?.pmDelivery?.id) return;
+      if (meta?.pmRuntimeId) {
+        await this.sendPmInput(session, meta, raw, from, queuedId);
+        return;
+      }
       const decorated = this.inputDecorator?.(session, raw, from) ?? { input: raw };
       try {
         await this.deliver(session, this.forRunner(session, decorated.input));
@@ -572,6 +704,72 @@ export class SessionService {
       // this delivery in flight and skipped, so nothing else would send what queued up.
       if (this.deps.outbox.count(session.id) > 0) this.flushIfSettled(session.id);
     }
+  }
+
+  private async sendPmInput(
+    session: Session,
+    meta: StoredStartMeta,
+    raw: UserInput,
+    from: QueueSender,
+    queuedId?: string,
+  ): Promise<void> {
+    const { id } = session;
+    const decorated = meta.pmDelivery ? undefined : this.inputDecorator?.(session, raw, from, true);
+    const delivery: PmDelivery = meta.pmDelivery ?? {
+      id: randomUUID(),
+      input: this.externalize(session, decorated?.input ?? raw),
+      from,
+      queuedId,
+      noticeIds: decorated?.noticeIds ?? [],
+    };
+    const { repo, launcher } = this.deps;
+    repo.setStartMeta(id, (m) => ({ ...(m ?? meta), pmDelivery: delivery, turnFromUser: false }));
+    const runner = this.runnerOf(id);
+    try {
+      await applyPendingConfig(repo, runner, session);
+      repo.update(id, (s) =>
+        s.status === "running" ? s : { ...s, status: "running", endedAt: null },
+      );
+      const send = () =>
+        runner.request({
+          name: "session.send",
+          sessionId: id,
+          input: this.deps.artifacts.resolveAttachments(delivery.input),
+          runtimeId: meta.pmRuntimeId,
+          deliveryId: delivery.id,
+          priorContext: meta.pmPriorContext,
+        });
+      try {
+        await send();
+      } catch (error) {
+        if (runnerErrorCode(error) !== "unknown_session") throw error;
+        await launcher.resume(repo.get(id));
+        await send();
+      }
+      if (repo.find(id)?.startMeta?.pmLastDeliveryId !== delivery.id) {
+        throw conflict("The runner is still confirming delivery", "timeout");
+      }
+    } catch (error) {
+      if (repo.find(id)?.startMeta?.pmLastDeliveryId === delivery.id) {
+        decorated?.delivered?.();
+        return;
+      }
+      if (mayHaveStarted(error) || (meta.pmDelivery && isTurnRunningError(error))) {
+        this.holds.hold(id, true);
+      } else {
+        repo.setStartMeta(id, (m) => ({ ...(m ?? meta), pmDelivery: undefined }));
+        decorated?.failed?.(error);
+      }
+      if (!isTurnRunningError(error)) {
+        repo.update(id, (s) =>
+          s.status === "running"
+            ? { ...s, status: session.status === "running" ? "interrupted" : session.status }
+            : s,
+        );
+      }
+      throw toServiceError(error);
+    }
+    decorated?.delivered?.();
   }
 
   /** The checks loop's round count follows a message on its way to the session (`roundAfter`). */

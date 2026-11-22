@@ -1,6 +1,6 @@
 import type { ProviderInfo, Session } from "@codeden/contracts";
 import { errorMessage } from "../errors";
-import { type RunnerDeps, type RunnerPort, runnerForSession } from "../runner-port";
+import { isRemoteRunner, type RunnerDeps, type RunnerPort, runnerForSession } from "../runner-port";
 import { lastCompaction } from "./compact";
 import type { SessionLauncher } from "./launcher";
 import { isTurnRunningError } from "./outbox-holds";
@@ -64,12 +64,28 @@ export class SessionRecovery {
     const runner =
       runnerId && this.deps.runners ? this.deps.runners.forRunnerId(runnerId) : this.deps.runner;
     const onThisRunner = (id: string) => runnerForSession(this.deps, id) === runner;
+    if (!isRemoteRunner(runner)) {
+      for (const pm of repo.list({ role: "pm" })) {
+        const meta = repo.find(pm.id)?.startMeta;
+        if (!meta?.pmSwitch && !meta?.pmDelivery) continue;
+        await sessions
+          .recoverPmRuntime(pm.id)
+          .catch((error: unknown) =>
+            this.deps.log?.(`recovery: PM ${pm.id}: ${errorMessage(error)}`),
+          );
+      }
+    }
     // Only sessions that were cut off before this runner was ready. A session started on it
     // meanwhile can turn `running` while `runner.status` is in flight (its first events can
     // arrive in the same read as the reply) and must not be mistaken for a cut-off one.
     const candidates = repo
       .list({ status: [...CUT_OFF] })
-      .filter((s) => !sessions.launching.has(s.id) && onThisRunner(s.id))
+      .filter(
+        (s) =>
+          !sessions.launching.has(s.id) &&
+          onThisRunner(s.id) &&
+          !repo.find(s.id)?.startMeta?.pmSwitch,
+      )
       .map((s) => s.id);
     // Still cut off: not being started, and no message, Retry or queued delivery on its way.
     const stillCutOff = (id: string) => {
