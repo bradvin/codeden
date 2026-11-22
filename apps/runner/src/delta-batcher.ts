@@ -18,6 +18,7 @@ export interface DeltaBatcherOptions {
 }
 
 interface Batch {
+  runtimeId?: string;
   delta: AgentEventOf<"item.delta">;
   chars: number;
   timer: ReturnType<typeof setTimeout>;
@@ -43,7 +44,7 @@ export class DeltaBatcher {
 
   push(event: RunnerEvent): void {
     if (event.kind === "agent" && event.event.type === "item.delta") {
-      this.add(event.sessionId, event.event);
+      this.add(event.sessionId, event.event, event.runtimeId);
       return;
     }
     this.flush("sessionId" in event ? event.sessionId : undefined);
@@ -60,20 +61,25 @@ export class DeltaBatcher {
     if (!batch) return;
     clearTimeout(batch.timer);
     this.batches.delete(sessionId);
-    this.out({ kind: "agent", sessionId, event: batch.delta });
+    this.out({
+      kind: "agent",
+      sessionId,
+      event: batch.delta,
+      ...(batch.runtimeId ? { runtimeId: batch.runtimeId } : {}),
+    });
   }
 
-  private add(sessionId: string, delta: AgentEventOf<"item.delta">): void {
+  private add(sessionId: string, delta: AgentEventOf<"item.delta">, runtimeId?: string): void {
     const chars = itemDeltaText(delta.delta).length;
     let batch = this.batches.get(sessionId);
-    const merged = batch && mergeItemDeltas(batch.delta, delta);
+    const merged = batch && batch.runtimeId === runtimeId && mergeItemDeltas(batch.delta, delta);
     if (batch && merged) {
       batch.delta = merged;
       batch.chars += chars;
     } else {
       this.flush(sessionId);
       const windowMs = this.opts.windowMs ?? DELTA_WINDOW_MS;
-      batch = { delta, chars, timer: setTimeout(() => this.flush(sessionId), windowMs) };
+      batch = { delta, chars, runtimeId, timer: setTimeout(() => this.flush(sessionId), windowMs) };
       this.batches.set(sessionId, batch);
     }
     if (batch.chars >= (this.opts.maxChars ?? DELTA_MAX_CHARS)) this.flush(sessionId);

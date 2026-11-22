@@ -325,7 +325,7 @@ When a turn completes (not a compaction, §7.1), CodeDen offers two to four sugg
 
 ### 8.1 Roles
 
-All three roles are the same kind of agent session, differing only in **role**, **system prompt**, **working directory** and **tool set**. Each can run on any provider. Claude Code is the default for the orchestrator and PMs, and each role can be switched to another provider.
+All three roles are the same kind of agent session, differing only in **role**, **system prompt**, **working directory** and **tool set**. Each can run on any provider. Claude Code is the default for the orchestrator and PMs. Each role has its own default provider for new sessions. An existing project PM can also switch providers from its composer.
 
 | Role | Count | Works in | Purpose |
 |---|---|---|---|
@@ -334,6 +334,12 @@ All three roles are the same kind of agent session, differing only in **role**, 
 | Agent | many | Its own worktree and branch, or its own clone in a sandbox (§4.2) | Does the work: code, tests, PRs, evidence |
 
 The orchestrator and PMs always run on the home runner next to the server: they write no code, need little more than MCP, and are long-lived, so a sandbox each would add cost and no isolation.
+
+**Switching a project manager's provider.** The model picker in an idle, failed or interrupted PM chat can select a provider, model and effort and confirm the switch. The home runner must have the provider available and report native read-only support. Model and effort changes on the current provider still go through session settings. A running turn, open request or in-flight delivery blocks a switch.
+
+The server holds delivery while the runner replaces the provider conversation. It stores the switch and a bounded brief from the existing transcript before asking the runner. The session ID, project folder, role prompt, project tools, transcript root and outbox survive. The target always opens a fresh native conversation. The runner journals which runtime opened, and the server accepts that runtime's events and retires the outgoing token. Retrying a lost reply reconciles the same runtime. A refused startup leaves the pending work for another attempt. One notice records the switch in the transcript.
+
+The first accepted work turn on the new provider receives quoted historical context with the current request, decisions, unfinished work and failure when available. This works for user input, queued messages and notice wake-ups. The live input keeps its sender, attachments and authority. Acceptance records which queued message and notices reached that runtime, so a reconnect can reconcile the delivery before it resumes the queue.
 
 ### 8.2 How work flows
 
@@ -845,7 +851,7 @@ Detailed, trustworthy reports on spend and usage across every provider, project 
   - input, output, cache-read and cache-write tokens
   - reasoning tokens where reported
   - cost in USD as reported by the provider
-  - session, project, provider, model, role (orchestrator, PM or agent), `startedBy`, automation id and timestamp
+  - session, project, provider, model, role (orchestrator, PM or agent), `startedBy`, automation id and timestamp. A turn keeps the provider and model that ran it when the session changes models or a PM switches providers. Older turns can use their existing ledger attribution.
 - **Cost sources are labelled honestly.** Each figure is marked `reported` (the provider returned a USD cost) or `estimated` (tokens multiplied by a bundled, user-editable price table per model).
   - **API-key users** see actual spend.
   - **Subscription users** (a claude.ai or ChatGPT login) see an **"API-equivalent cost"**, clearly labelled as such, so they know what the same work would cost on API credits.
@@ -874,7 +880,7 @@ Detailed, trustworthy reports on spend and usage across every provider, project 
   - typed notice cards
 - **Composer:**
   - text, pasted images and file attachments, `@` file mentions, `/` commands and skills
-  - provider, model and effort pickers, plus the autonomy level and a **Plan** toggle, usable where the provider reports `planMode` (§11.2). Elsewhere it stays disabled with the reason, naming the provider. A new session draft keeps the Plan choice across provider switches, but sends it only to a provider that can plan
+  - provider, model and effort pickers (an existing PM confirms a cross-provider change here, §8.1), plus the autonomy level and a **Plan** toggle, usable where the provider reports `planMode` (§11.2). Elsewhere it stays disabled with the reason, naming the provider. A new session draft keeps the Plan choice across provider switches, but sends it only to a provider that can plan
   - queue or steer while a turn runs
   - the voice button, with live dictation text under the message (§11.3)
   - **follow-up chips** after a turn completes (§7.5)

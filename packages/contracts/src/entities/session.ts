@@ -177,6 +177,9 @@ export type TurnStatus = z.infer<typeof TurnStatus>;
 
 /** Turn projection (§6 `turns`). */
 export const Turn = z.object({
+  /** Historical attribution. Older turns may have only a usage ledger entry. */
+  provider: z.string().nullable().optional(),
+  model: z.string().nullable().optional(),
   id: Id,
   threadId: Id,
   sessionId: Id,

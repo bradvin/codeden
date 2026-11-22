@@ -67,7 +67,7 @@ export function backfillUsageLedger(db: Db): number {
     let previous: { sessionId: string; usage: Usage } | undefined;
     for (const { turn } of rows) {
       if (!hasTokens(turn.usage)) continue;
-      const who = attribution(tx, turn.sessionId);
+      const who = attribution(tx, turn.sessionId, turn.id);
       if (!who) continue;
       const mode = RUNNING_TOTALS[who.provider];
       let usage = turn.usage;

@@ -164,3 +164,37 @@ describe("RoleChat before the role session exists", () => {
     });
   });
 });
+
+describe("model selection in an existing project manager chat", () => {
+  it("confirms the provider, model and effort together and keeps the PM session", async () => {
+    Object.defineProperty(HTMLElement.prototype, "scrollTo", {
+      configurable: true,
+      value: vi.fn(),
+    });
+    const client = createMockClient();
+    const select = vi.spyOn(client, "switchPmProvider");
+    const update = vi.spyOn(client, "updateSession");
+    renderWithClient(<RoleChat kind="pm" projectId="p-storefront" empty={() => null} />, client, {
+      withRouter: true,
+    });
+    fireEvent.click(
+      await screen.findByRole("button", { name: /^Provider and model: Claude Code/ }),
+    );
+    fireEvent.click(await screen.findByRole("button", { name: "Codex" }));
+    fireEvent.click(await screen.findByRole("option", { name: /^gpt-6-nova,/ }));
+    expect(select).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("radio", { name: "High" }));
+    expect(select).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Switch to Codex" }));
+    await waitFor(() =>
+      expect(select).toHaveBeenCalledWith("s-pm-storefront", {
+        provider: "codex",
+        model: "gpt-6-nova",
+        effort: "high",
+      }),
+    );
+    await screen.findByRole("button", { name: /^Provider and model: Codex/ });
+    expect(update).not.toHaveBeenCalled();
+    expect(screen.getByRole("combobox", { name: "Message" })).toBeTruthy();
+  });
+});

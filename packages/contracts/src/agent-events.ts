@@ -89,6 +89,9 @@ export const TurnStartedEvent = z.object({
   ...turnScoped,
   /** Absent: `work`. The runner marks the turn a compaction starts (`session.compact`). */
   kind: TurnKind.optional(),
+  /** Effective provider and model at turn start, independent of subsequent settings. */
+  provider: z.string().optional(),
+  model: z.string().nullable().optional(),
 });
 
 /**

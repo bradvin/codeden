@@ -1,6 +1,6 @@
 import type { AutonomyMode, Session, Usage, UsageSource } from "@codeden/contracts";
 import { and, eq } from "drizzle-orm";
-import { automationRuns, projects, sessions } from "../../db/schema";
+import { automationRuns, projects, sessions, turns } from "../../db/schema";
 import { rateLimitWindows, usageLedger } from "../../db/schema-usage";
 import type { Tx } from "../../events/projection-db";
 
@@ -57,7 +57,7 @@ interface UsageReport {
 }
 
 /** Session attribution copied onto ledger rows: project, role, source, automation. */
-export function attribution(tx: Tx, sessionId: string) {
+export function attribution(tx: Tx, sessionId: string, turnId?: string) {
   const s = tx.select().from(sessions).where(eq(sessions.id, sessionId)).get();
   if (!s) return undefined;
   const project = s.projectId
@@ -76,10 +76,25 @@ export function attribution(tx: Tx, sessionId: string) {
     : undefined;
   const automationId = run?.automationId ?? null;
   const startedBy = automationId ? "automation" : s.startedBy.kind;
+  const turn = turnId
+    ? tx
+        .select({ provider: turns.provider, model: turns.model })
+        .from(turns)
+        .where(and(eq(turns.sessionId, sessionId), eq(turns.id, turnId)))
+        .get()
+    : undefined;
+  const existing =
+    turnId && !turn?.provider
+      ? tx
+          .select({ provider: usageLedger.provider, model: usageLedger.model })
+          .from(usageLedger)
+          .where(and(eq(usageLedger.sessionId, sessionId), eq(usageLedger.turnId, turnId)))
+          .get()
+      : undefined;
   return {
     projectId: s.projectId,
-    provider: s.provider,
-    model: s.model ?? "default",
+    provider: turn?.provider ?? existing?.provider ?? s.provider,
+    model: turn?.provider ? (turn.model ?? "default") : (existing?.model ?? s.model ?? "default"),
     role: s.role as Session["role"],
     source: sourceOf(startedBy, (project?.mode as AutonomyMode | undefined) ?? null),
     automationId,
@@ -95,7 +110,7 @@ export function attribution(tx: Tx, sessionId: string) {
 export function applyUsageReport(tx: Tx, report: UsageReport): void {
   const { usage } = report;
   if (report.turnId && hasTokens(usage)) {
-    const who = attribution(tx, report.sessionId);
+    const who = attribution(tx, report.sessionId, report.turnId);
     if (who) {
       const values = {
         sessionId: report.sessionId,

@@ -170,14 +170,15 @@ export class OrchestrationService {
 
   start(): void {
     this.unsubscribe = this.deps.store.subscribe((events) => this.onEvents(events));
-    this.deps.sessions.setInputDecorator((session, input, from) => {
+    this.deps.sessions.setInputDecorator((session, input, from, durable) => {
       // Who the turn is from counts once the runner takes it (the loop guard, #137).
       const turn = this.loops.beginTurn(session, from, input);
       try {
         // The status digest and undelivered notices, fresh at send time (§8.4, `NoticeDelivery`).
-        const decorated = this.delivery.decorate(session, input);
+        const decorated = this.delivery.decorate(session, input, durable);
         return {
           input: decorated.input,
+          noticeIds: decorated.noticeIds,
           delivered: () => {
             decorated.delivered?.();
             turn.accepted();
@@ -193,6 +194,7 @@ export class OrchestrationService {
         throw error;
       }
     });
+    this.deps.sessions.setPmSwitchSettled(() => this.delivery.rearm());
     this.delivery.rearm();
     this.reminders.start();
   }
@@ -449,7 +451,10 @@ export class OrchestrationService {
     if (NOT_READY.has(session.status)) return "busy";
     await this.deps.sessions.send(
       session.id,
-      { input: { text: WAKE_TEXT, attachments: [] }, whenBusy: "reject" },
+      {
+        input: { text: WAKE_TEXT, attachments: [], ...(role === "pm" ? { from: "codeden" } : {}) },
+        whenBusy: "reject",
+      },
       "codeden",
     );
     return "sent";

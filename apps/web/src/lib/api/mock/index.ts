@@ -274,6 +274,46 @@ export function createMockClient(opts: MockClientOptions = {}): CodeDenClient {
       return delay({ sessionId: id }, 200);
     },
     exportSession: (sessionId) => delay(mockExportSession(world.sessionSnapshot(sessionId)), 150),
+    async switchPmProvider(sessionId, req) {
+      const source = world.snapshot.sessions.find((s) => s.id === sessionId);
+      if (source?.role !== "pm")
+        throw new Error("Only an existing project manager can switch providers");
+      if (!["idle", "failed", "interrupted"].includes(source.status)) {
+        throw new Error("Wait for the project manager's turn to finish");
+      }
+      const target = world.snapshot.runner.providers.find((p) => p.id === req.provider);
+      if (!target?.capabilities.readOnly)
+        throw new Error("Choose a provider with read-only support");
+      const session = {
+        ...source,
+        ...req,
+        status: "idle" as const,
+        resumeToken: null,
+        updatedAt: new Date().toISOString(),
+      };
+      world.emitDomain({ type: "session.updated", sessionId, payload: { session } });
+      const threadId = source.rootThreadId;
+      const turnId = threadId
+        ? world.transcript(sessionId).threads[threadId]?.turnIds.at(-1)
+        : undefined;
+      if (threadId && turnId) {
+        const previous = world.snapshot.runner.providers.find((p) => p.id === source.provider);
+        world.emitAgent(sessionId, {
+          type: "item.completed",
+          threadId,
+          turnId,
+          item: {
+            id: uid("pm-provider"),
+            kind: "notice",
+            status: "completed",
+            level: "info",
+            code: "pm_provider_switched",
+            message: `Project manager switched from ${previous?.displayName ?? source.provider} to ${target.displayName}${req.model ? ` (${req.model})` : ""}.`,
+          },
+        });
+      }
+      return delay(session, 200);
+    },
     async handoffSession(sessionId, req) {
       const source = world.snapshot.sessions.find((s) => s.id === sessionId);
       if (!source) throw new Error("Session not found");

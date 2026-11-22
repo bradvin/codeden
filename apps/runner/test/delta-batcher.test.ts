@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DeltaBatcher } from "../src/delta-batcher";
 
 const at = { threadId: "t", turnId: "u" };
-const agent = (event: AgentEvent, sessionId = "s1"): RunnerEvent => ({
+const agent = (event: AgentEvent, sessionId = "s1"): Extract<RunnerEvent, { kind: "agent" }> => ({
   kind: "agent",
   sessionId,
   event,
@@ -65,6 +65,16 @@ describe("DeltaBatcher", () => {
       text("d", "x"),
       completed,
     ]);
+  });
+
+  it("preserves the runtime id on streamed deltas", () => {
+    const first = { ...text("a", "part "), runtimeId: "runtime-one" };
+    batcher.push(first);
+    batcher.push({ ...text("a", "one"), runtimeId: "runtime-one" });
+    const second = { ...text("a", "two"), runtimeId: "runtime-two" };
+    batcher.push(second);
+    batcher.flush();
+    expect(out).toEqual([{ ...text("a", "part one"), runtimeId: "runtime-one" }, second]);
   });
 
   it("passes a batch on after the window", () => {

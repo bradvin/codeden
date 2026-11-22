@@ -117,7 +117,7 @@ export function NoticeCard({ item }: { item: ItemOf<"notice"> }) {
     >
       <Icon className="size-3.5 shrink-0" />
       <span className="min-w-0 truncate">{item.message}</span>
-      {item.code && (
+      {item.code && item.code !== "pm_provider_switched" && (
         <span className="ml-auto shrink-0 font-mono text-3xs opacity-60">{item.code}</span>
       )}
     </div>

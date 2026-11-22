@@ -29,6 +29,7 @@ import { slugWords } from "./conflicts";
 import type { ForkStart } from "./fork";
 import { withHandoffBrief } from "./handoff";
 import { ownBranch } from "./own-branch";
+import type { PmSwitch } from "./pm-runtime-state";
 import type { SessionRepo } from "./repo";
 import { withSetupNote } from "./setup-failure";
 import { seenSetups, settleSetup } from "./setup-gate";
@@ -282,6 +283,44 @@ export class SessionLauncher {
     this.deps.inbox.raiseRunFailed(session, key, message);
   }
 
+  /** Replace a settled project manager without starting a turn or changing its workspace. */
+  async replacePm(session: Session, pending: PmSwitch): Promise<void> {
+    const runner = this.deps.runner;
+    const token = runner.mcpProxyUrl()
+      ? this.deps.tokens.mint({ role: "pm", sessionId: session.id, projectId: session.projectId })
+      : null;
+    const tokenId = token ? this.deps.tokens.verify(token)?.jti : undefined;
+    const previousRuntimeId = this.deps.repo.find(session.id)?.startMeta?.pmRuntimeId;
+    try {
+      const result = await runner.request(
+        {
+          name: "session.replacePm",
+          sessionId: session.id,
+          providerId: pending.provider,
+          runtimeId: pending.id,
+          previousRuntimeId,
+          transcriptRootId: pending.rootId,
+          tokenId,
+          options: this.sessionOptions(
+            {
+              ...session,
+              provider: pending.provider,
+              model: pending.model,
+              effort: pending.effort,
+              resumeToken: null,
+            },
+            token,
+          ),
+        },
+        START_TIMEOUT_MS,
+      );
+      if (token && result.reused) this.deps.tokens.revoke(token);
+    } catch (error) {
+      if (token && !unansweredCode(error)) this.deps.tokens.revoke(token);
+      throw error;
+    }
+  }
+
   /**
    * Open the provider session on the runner (`session.start`) with a freshly minted MCP token,
    * then retire the tokens no running process holds (§8.3). Started: the session's other
@@ -305,12 +344,20 @@ export class SessionLauncher {
         })
       : null;
     this.markVendorHistory(runner, session);
+    const runtimeId = this.deps.repo.find(session.id)?.startMeta?.pmRuntimeId;
     const turnsBefore = this.deps.repo.turnCount(session.id);
     try {
       const result = await runner.request(
         {
           name: "session.start",
           sessionId: session.id,
+          ...(runtimeId && session.rootThreadId
+            ? {
+                runtimeId,
+                transcriptRootId: session.rootThreadId,
+                checkpoints: false,
+              }
+            : {}),
           providerId: session.provider,
           options: this.sessionOptions(session, token),
           input,

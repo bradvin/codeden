@@ -193,9 +193,32 @@ export const RunnerCommand = z.discriminatedUnion("name", [
     input: UserInput.optional(),
     /** Snapshot the cwd at session start and every turn end (§9). Default true in git repos. */
     checkpoints: z.boolean().optional(),
+    /** The selected conversation of a switched PM, also supplied on resume. */
+    runtimeId: Id.optional(),
+    transcriptRootId: Id.optional(),
   }),
-  /** Start a new turn. */
-  z.object({ name: z.literal("session.send"), sessionId: Id, input: UserInput }),
+  /** Replace a settled PM runtime with a fresh native conversation. Safe to retry by runtime id. */
+  z.object({
+    name: z.literal("session.replacePm"),
+    sessionId: Id,
+    providerId: ProviderId,
+    options: SessionOptions,
+    runtimeId: Id,
+    previousRuntimeId: Id.optional(),
+    /** The non-secret identifier of the new runtime's MCP grant. */
+    tokenId: Id.optional(),
+    transcriptRootId: Id,
+  }),
+  /** Start a new turn. Switched PMs can retry the same delivery after a lost reply. */
+  z.object({
+    name: z.literal("session.send"),
+    sessionId: Id,
+    input: UserInput,
+    runtimeId: Id.optional(),
+    deliveryId: Id.optional(),
+    /** Historical context attached by CodeDen, outside the live message. */
+    priorContext: z.string().max(12_000).optional(),
+  }),
   /** Inject input into the running turn (requires `capabilities.steer`). */
   z.object({ name: z.literal("session.steer"), sessionId: Id, input: UserInput }),
   z.object({ name: z.literal("session.interrupt"), sessionId: Id }),
@@ -381,6 +404,7 @@ export const RunnerSessionInfo = z.object({
   providerId: ProviderId,
   state: z.enum(["idle", "running", "closing"]),
   resumeToken: z.string().nullable(),
+  runtimeId: Id.optional(),
 });
 export type RunnerSessionInfo = z.infer<typeof RunnerSessionInfo>;
 
@@ -459,6 +483,7 @@ export const RunnerCommandResults = {
     discardedChanges: z.boolean().optional(),
   }),
   "session.start": z.object({ resumeToken: z.string().nullable() }),
+  "session.replacePm": z.object({ resumeToken: z.string().nullable(), reused: z.boolean() }),
   "session.send": Empty,
   "session.steer": Empty,
   "session.interrupt": Empty,

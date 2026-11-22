@@ -175,6 +175,9 @@ export async function executeCommand(core: RunnerCore, command: RunnerCommand): 
     case "session.start":
       if (core.isDraining()) throw new CommandError("draining", "Runner is draining");
       return host.start(command);
+    case "session.replacePm":
+      if (core.isDraining()) throw new CommandError("draining", "Runner is draining");
+      return host.replacePm(command);
     case "session.send":
       await host.send(command);
       return {};

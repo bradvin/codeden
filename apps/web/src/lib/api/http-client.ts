@@ -150,6 +150,8 @@ export function createHttpClient(origin: string, opts: HttpClientOptions = {}): 
     },
     forkSession: (id, req) =>
       post(`/sessions/${enc(id)}/fork`, req ?? {}, (v) => ForkSessionResponse.parse(v)),
+    switchPmProvider: (id, req) =>
+      post(`/sessions/${enc(id)}/switch-provider`, req, (v) => Session.parse(v)),
     handoffSession: (id, req) =>
       post(`/sessions/${enc(id)}/handoff`, req, (v) => HandoffSessionResponse.parse(v)),
     reviewSession: (id, req) =>

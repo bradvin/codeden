@@ -30,6 +30,12 @@ Both chats show the role badge, the model, the running cost and a **Read-only** 
 
 ![The orchestrator summarising running work, items waiting on you and recent finishes](images/orchestrator.png)
 
+## Switch the project manager's provider
+
+Open the project manager chat and choose a provider and model from the composer. Choose an effort if the model offers one, then select **Switch to** the provider. CodeDen keeps the same chat and passes a brief from its transcript to the new provider on the next message or wake-up. It can build that brief even after the previous provider reaches its usage limit.
+
+The provider must support read-only access on the home runner. Finish the current turn and answer any open requests before switching. If the new provider fails to open, fix the reason shown and try again from the same picker. Queued work waits while the switch is pending.
+
 ## Status digests
 
 Every time the orchestrator or a PM wakes (you message it, a notice arrives, another role asks it something), CodeDen prepends a fresh, compact status block to its input, so it knows the current state without spending a tool call:

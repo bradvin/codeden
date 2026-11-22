@@ -1,4 +1,9 @@
-import type { Session, Snapshot, UpdateSessionRequest } from "@codeden/contracts";
+import type {
+  Session,
+  Snapshot,
+  SwitchPmProviderRequest,
+  UpdateSessionRequest,
+} from "@codeden/contracts";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useRef } from "react";
 import { toast } from "sonner";
@@ -45,9 +50,8 @@ export function appliesFrom(
  * Model, effort, autonomy, plan mode and the checks loop for a session: a change is saved with
  * `PATCH /api/sessions/:id`. Model and effort apply from the next turn (a running turn keeps
  * its settings); autonomy and plan mode apply from the next tool call or the next turn, as the
- * provider allows. The provider is fixed for the life of a session, so the picker shows the
- * other providers locked; in an agent session they offer to hand the work off to a new session
- * on that provider (§9). The pickers show the server's values, never a local-only choice.
+ * provider allows. A project PM can select another provider in this chat. Agent sessions can
+ * hand off to another provider's new session (§9).
  */
 export function SessionOptions({ session, running }: { session: Session; running: boolean }) {
   const client = useClient();
@@ -70,6 +74,19 @@ export function SessionOptions({ session, running }: { session: Session; running
     },
     onError: (e) => toast.error("Couldn't change the session", { description: e.message }),
   });
+  const switchProvider = useMutation({
+    mutationFn: (choice: SwitchPmProviderRequest) => client.switchPmProvider(session.id, choice),
+    onSuccess: (updated) => {
+      queryClient.setQueryData<Snapshot>(snapshotKey, (s) =>
+        s ? { ...s, sessions: s.sessions.map((x) => (x.id === updated.id ? updated : x)) } : s,
+      );
+      toast.success(
+        `Switched to ${providers.find((p) => p.id === updated.provider)?.displayName ?? updated.provider}`,
+      );
+    },
+    onError: (error) =>
+      toast.error("Couldn't switch the project manager's provider", { description: error.message }),
+  });
   // Changes go out one at a time, so a model pick and an effort pick land in order.
   const queue = useRef<Promise<unknown>>(Promise.resolve());
   const save = (patch: UpdateSessionRequest) => {
@@ -81,6 +98,19 @@ export function SessionOptions({ session, running }: { session: Session; running
       <ModelPicker
         providers={providers}
         lockedProvider={session.provider}
+        disabled={switchProvider.isPending}
+        switchBlocked={
+          session.role === "pm"
+            ? (provider) => {
+                if (running || !["idle", "interrupted", "failed"].includes(session.status)) {
+                  return "Wait for the project manager's turn to finish and answer any open requests.";
+                }
+                return provider.capabilities.readOnly
+                  ? null
+                  : "This provider does not support read-only sessions.";
+              }
+            : undefined
+        }
         handoff={
           session.role === "agent"
             ? {
@@ -94,6 +124,10 @@ export function SessionOptions({ session, running }: { session: Session; running
         value={{ provider: session.provider, model: session.model, effort: session.effort }}
         shortcut
         onChange={(next) => {
+          if (session.role === "pm" && next.provider !== session.provider) {
+            switchProvider.mutate(next);
+            return;
+          }
           const patch: UpdateSessionRequest = {};
           if (next.model !== session.model) patch.model = next.model;
           if (next.effort !== session.effort) patch.effort = next.effort;

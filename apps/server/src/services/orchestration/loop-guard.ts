@@ -203,9 +203,10 @@ export class LoopGuard {
 
   /** A role session's turn origin; a turn started before this server did has its saved one. */
   private originOf(sessionId: string): boolean {
+    if (this.deps.turnOrigins) return this.deps.turnOrigins.load(sessionId) === true;
     let fromUser = this.userTurns.get(sessionId);
     if (fromUser === undefined) {
-      fromUser = this.deps.turnOrigins?.load(sessionId) === true;
+      fromUser = false;
       this.userTurns.set(sessionId, fromUser);
     }
     return fromUser;
@@ -213,7 +214,7 @@ export class LoopGuard {
 
   /** Save, then remember, a role session's turn origin (a failed save throws, unchanged). */
   private record(sessionId: string, fromUser: boolean): void {
-    if (this.userTurns.get(sessionId) === fromUser) return;
+    if (this.originOf(sessionId) === fromUser) return;
     this.deps.turnOrigins?.save(sessionId, fromUser);
     this.userTurns.set(sessionId, fromUser);
   }
