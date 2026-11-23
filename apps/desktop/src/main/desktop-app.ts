@@ -440,6 +440,10 @@ export class DesktopApp {
     });
     const remote: Remote = { id, window, monitor, loadFailed: false, uiBadge: 0 };
     this.remotes.set(id, remote);
+    // Refresh the tray sooner when sign-in reloads the page or the user returns to the window.
+    const recheck = () => void monitor.poll();
+    window.window.webContents.on("did-finish-load", recheck);
+    window.window.on("focus", recheck);
     void this.loadRemote(remote, entry.url);
     monitor.start();
     return remote;
