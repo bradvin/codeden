@@ -208,10 +208,52 @@ describe("trusted origin through a proxy on this machine", () => {
       ...json({ password: GOOD }, { "x-forwarded-for": "100.64.2.99" }),
     });
     expect(limited.status).toBe(429);
-    // And a local request with that header is not remote.
+    // A loopback request carrying it for an untrusted host was forwarded by a proxy: refused.
     expect(
       (await local("/api/snapshot", { headers: { ...auth, "x-forwarded-for": "1.2.3.4" } })).status,
-    ).toBe(200);
+    ).toBe(403);
+    // Without proxy headers this machine is unaffected.
+    expect((await local("/api/snapshot", { headers: auth })).status).toBe(200);
+  });
+
+  /**
+   * Tailscale Serve picks its backend by TLS SNI and passes on the client's own `Host`, adding
+   * `X-Forwarded-Host` (that same Host), `-Proto` and `-For`. A tailnet client can therefore
+   * name a loopback host through the proxy; it must still never count as this machine.
+   */
+  it("refuses a proxied request that names a loopback host, with access on or off", async () => {
+    const serve = (path: string, host: string, headers: Record<string, string> = {}) =>
+      from("127.0.0.1", path, {
+        host,
+        headers: {
+          host,
+          "x-forwarded-host": host,
+          "x-forwarded-proto": "https",
+          "x-forwarded-for": "100.64.0.66",
+          ...headers,
+        },
+      });
+    const proxyHeaders: Record<string, string>[] = [
+      { forwarded: "for=100.64.0.66;proto=https" },
+      { "x-real-ip": "100.64.0.66" },
+    ];
+    for (const on of [true, false]) {
+      await network.setEnabled(on);
+      for (const host of [`127.0.0.1:${PORT}`, `localhost:${PORT}`, `[::1]:${PORT}`]) {
+        for (const path of ["/mcp", "/api/health", "/api/auth/status", "/", "/ws"]) {
+          const res = await serve(path, host);
+          expect(res.status, `${on} ${host} ${path}`).toBe(403);
+          expect(await res.text()).toBe("Forbidden host");
+        }
+        expect((await serve("/api/snapshot", host, auth)).status).toBe(403);
+        expect((await serve(`/api/snapshot?token=${TOKEN}`, host)).status).toBe(403);
+      }
+      // Any one forwarding header is enough, without the others.
+      for (const headers of proxyHeaders) {
+        const res = await local("/mcp", { headers });
+        expect(res.status, JSON.stringify(headers)).toBe(403);
+      }
+    }
   });
 
   it("shows the forwarded address as proxy-reported in devices and the log", async () => {
