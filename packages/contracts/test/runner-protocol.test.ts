@@ -5,9 +5,11 @@ import {
   RUNNER_PROTOCOL_VERSION,
   RunnerCommand,
   RunnerCommandResults,
+  RunnerEvent,
   RunnerLock,
   RunnerToServerMessage,
   ServerToRunnerMessage,
+  SwitchPmProviderRequest,
 } from "../src";
 import { sampleAgentEvents, ts } from "./fixtures";
 
@@ -397,4 +399,31 @@ describe("runner protocol", () => {
     });
     expect(RunnerLock.safeParse({ pid: 1, port: 0 }).success).toBe(false);
   });
+});
+
+it("round-trips PM replacement and delivery receipts while accepting older agent envelopes", () => {
+  const selection = roundTrip(SwitchPmProviderRequest, {
+    provider: "codex",
+    model: null,
+    effort: "high",
+  });
+  expect(selection).toEqual({ provider: "codex", model: null, effort: "high" });
+  const runtime = {
+    sessionId: "pm",
+    runtimeId: "runtime-b",
+  };
+  roundTrip(RunnerCommand, {
+    name: "session.replacePm",
+    ...runtime,
+    providerId: "codex",
+    previousRuntimeId: "runtime-a",
+    transcriptRootId: "stable-root",
+    options: { sessionId: "pm", cwd: "/project", role: "pm", autonomy: "auto", readOnly: true },
+  });
+  const events = [
+    { kind: "session.pmReplaced", ...runtime, resumeToken: "native-root" },
+    { kind: "session.pmInputAccepted", ...runtime, deliveryId: "input" },
+    { kind: "agent", sessionId: "pm", event: { type: "session.updated", model: "legacy" } },
+  ];
+  for (const event of events) roundTrip(RunnerEvent, event);
 });

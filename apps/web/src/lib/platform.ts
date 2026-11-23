@@ -1,8 +1,4 @@
-import type {
-  CodedenDesktopApi,
-  CodedenDesktopBrowserApi,
-  DesktopServerRef,
-} from "@codeden/contracts";
+import type { CodedenDesktopApi, CodedenDesktopBrowserApi } from "@codeden/contracts";
 import { copyText } from "./clipboard";
 import { createDesktopPlatform } from "./platform-desktop";
 
@@ -26,15 +22,6 @@ export interface PlatformBridge {
   };
   /** Places the desktop app's native browser views (§17 Phase 2); null elsewhere. */
   readonly nativeBrowser: CodedenDesktopBrowserApi | null;
-  /**
-   * The desktop app's server switcher (§17): which server this window shows and the native menu
-   * to open another. Null in a browser. The menu is built by the app, so no server list reaches
-   * the page.
-   */
-  readonly serverSwitcher: {
-    current(): Promise<DesktopServerRef | null>;
-    showMenu(): void;
-  } | null;
   notificationPermission(): NotificationPermission | "unsupported";
   requestNotificationPermission(): Promise<NotificationPermission | "unsupported">;
   notify(title: string, opts?: { body?: string; tag?: string; onClick?: () => void }): void;
@@ -76,7 +63,6 @@ export function createWebPlatform(): PlatformBridge {
       nativeBrowser: false,
     },
     nativeBrowser: null,
-    serverSwitcher: null,
     notificationPermission: () => (hasNotifications ? Notification.permission : "unsupported"),
     async requestNotificationPermission() {
       if (!hasNotifications) return "unsupported";

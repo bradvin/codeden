@@ -1,27 +1,32 @@
+import { rmSync } from "node:fs";
 import { join } from "node:path";
 import {
   type DesktopInfo,
+  type DesktopServer,
+  type DesktopServerAdd,
+  type DesktopServerResult,
   type DesktopUpdateCommand,
   deepLinkPath,
+  LOCAL_SERVER_ID,
   parseDeepLink,
 } from "@codeden/contracts";
-import { app, BrowserWindow, dialog, Menu, Notification, shell } from "electron";
+import { app, dialog, Menu, Notification, net, session, shell } from "electron";
 import { CHANNELS } from "../shared/channels";
 import { ActivityMonitor, type ServerStatus } from "./activity";
 import type { LaunchArgs } from "./args";
 import { AppBadge } from "./badge";
+import { parseRemoteTag } from "./bridge-policy";
 import { NativeBrowserFeature } from "./browser/feature";
 import { type Connection, connect, launchUrl } from "./connection";
 import { armQuitWatchdog, forceExit } from "./exit";
-import { registerBridge } from "./ipc";
+import { type BridgeCaller, registerBridge } from "./ipc";
 import { appMenuTemplate } from "./menu";
+import { redactToken } from "./security";
 import { homeFiles } from "./server-plan";
-import type { BridgeCaller } from "./servers/bridge-policy";
-import { ServerHub } from "./servers/hub";
-import { ServerManager } from "./servers/manager";
-import { WindowRegistry } from "./servers/registry";
-import { ServerStore } from "./servers/store";
-import { ServerSwitcher } from "./servers/switcher";
+import { healthCheck } from "./servers/health";
+import { RemoteMonitor, type RemoteStatus } from "./servers/monitor";
+import { partitionFor, ServerStore } from "./servers/store";
+import { totalBadge, trayServers } from "./servers/summary";
 import {
   applyLaunchAtLogin,
   fileLogger,
@@ -42,6 +47,17 @@ const DOCS_URL = "https://github.com/leonvanzyl/codeden/blob/main/docs/desktop.m
 /** Longest a quit may take (browser hand-off 15 s + server stop up to 30 s) before it's forced. */
 const QUIT_LIMIT_MS = 45_000;
 
+/** A window on another CodeDen server (§17.1) and its status poller. */
+interface Remote {
+  id: string;
+  window: MainWindow;
+  monitor: RemoteMonitor;
+  /** The first load failed (the server was unreachable): opening it again reloads. */
+  loadFailed: boolean;
+  /** The last count its page set on the badge, used only while polling can't answer. */
+  uiBadge: number;
+}
+
 /**
  * The desktop app (§17): one window on the server's UI, a tray with live counts, the app
  * badge, keep-awake, native notifications and folder picking, `codeden://` links and updates
@@ -57,11 +73,10 @@ export class DesktopApp {
   private readonly keepAwake = new KeepAwake();
   private updates!: UpdateController;
   private browser!: NativeBrowserFeature;
-  private hub!: ServerHub;
-  private switcher!: ServerSwitcher;
-  private manager!: ServerManager;
-  private readonly registry = new WindowRegistry<MainWindow>();
   private monitor: ActivityMonitor | undefined;
+  private store!: ServerStore;
+  private readonly remotes = new Map<string, Remote>();
+  private localBadge = 0;
   private conn: Connection | undefined;
   private status: ServerStatus = { connected: false, activity: null, settings: null };
   private pendingPath: string | null = null;
@@ -106,35 +121,10 @@ export class DesktopApp {
       this.notifyUpdate();
     });
 
-    const desktopDir = homeFiles(this.args.home).desktop;
-    this.hub = new ServerHub({
-      store: new ServerStore(join(desktopDir, "servers.json")),
-      stateDir: desktopDir,
-      preload: join(this.dist, "preload.cjs"),
-      icon: this.asset("icon.png"),
+    this.store = new ServerStore({
+      file: join(homeFiles(this.args.home).desktop, "servers.json"),
+      check: healthCheck(net.fetch.bind(net) as typeof fetch),
       appVersion: app.getVersion(),
-      registry: this.registry,
-      onChange: () => this.serversChanged(),
-      log: this.log,
-    });
-    this.manager = new ServerManager({
-      preload: join(this.dist, "servers-preload.cjs"),
-      page: this.asset("servers.html"),
-      icon: this.asset("icon.png"),
-      host: {
-        rows: () => this.switcher.rows(),
-        add: (name, url) => this.hub.add(name, url),
-        rename: (id, name) => this.hub.rename(id, name),
-        remove: (id) => this.hub.remove(id),
-        open: (id) => this.switcher.open(id),
-      },
-      log: this.log,
-    });
-    this.switcher = new ServerSwitcher({
-      hub: this.hub,
-      localName: process.platform === "darwin" ? "This Mac" : "This computer",
-      showLocal: () => this.show(),
-      manage: () => this.manager.show(),
     });
     Menu.setApplicationMenu(Menu.buildFromTemplate(this.menu()));
     this.tray = new AppTray(
@@ -142,7 +132,7 @@ export class DesktopApp {
       {
         open: () => this.show(),
         openInbox: () => this.navigate("/inbox"),
-        openServer: (id) => this.switcher.open(id),
+        openServer: (id) => this.openServer(id),
         update: (command) => void this.runUpdate(command),
         quit: () => app.quit(),
       },
@@ -150,36 +140,33 @@ export class DesktopApp {
     this.window = new MainWindow({
       preload: join(this.dist, "preload.cjs"),
       icon: this.asset("icon.png"),
-      stateFile: join(desktopDir, "window-state.json"),
+      stateFile: join(homeFiles(this.args.home).desktop, "window-state.json"),
       show: !this.args.hidden && !openedAtLogin(),
       hideOnClose: () => this.status.settings?.desktop.closeToTray ?? true,
       log: this.log,
     });
     this.badge = new AppBadge(() => this.window.window, this.asset("badge.png"));
     this.browser = new NativeBrowserFeature({ window: () => this.window.window, log: this.log });
-    this.registry.add(
-      this.window.webContentsId,
-      (): BridgeCaller => ({
-        kind: "local",
-        server: this.switcher.localRef,
-        origin: this.window.serverOrigin,
-      }),
-      this.window,
-    );
     registerBridge({
-      caller: (id) => this.registry.caller(id),
+      caller: (id) => this.callerOf(id),
       info: (caller) => this.info(caller),
-      notificationClicked: (serverId, tag) => this.notificationClicked(serverId, tag),
-      // The icon shows what waits across every server, whichever window reports a count.
-      setBadge: () => this.refresh(),
-      showServerMenu: (window, caller) => this.switcher.popup(window, caller.server.id),
+      notificationClick: (tag) => this.notificationClick(tag),
+      setBadge: (caller, count) => this.setBadge(caller, count),
       icon: this.asset("icon.png"),
       log: this.log,
       browser: this.browser.browsers,
+      servers: {
+        list: () => this.serverList(),
+        open: (id) => this.openServer(id),
+        add: (input) => this.addServer(input),
+        rename: (id, name) => this.renameServer(id, name),
+        remove: (id) => this.removeServer(id),
+      },
     });
-    this.hub.start();
     this.exposeForTests();
     await this.open();
+    // Saved servers load in the background, so their notifications and counts work from launch.
+    for (const server of this.store.list().filter((x) => x.url)) this.startRemote(server.id, false);
   }
 
   /** Connect to (or start) the server and load the UI. */
@@ -222,22 +209,6 @@ export class DesktopApp {
     this.window?.show();
   }
 
-  /** A notification was clicked: bring its server's window up, then open what it is about. */
-  private notificationClicked(serverId: string, tag: string | undefined): void {
-    const window = this.registry.windowFor(serverId);
-    if (!window) return;
-    window.show();
-    if (tag) window.window.webContents.send(CHANNELS.notificationClick, tag);
-  }
-
-  /** The list or a remote's state changed: the menus, tray, badge and manager follow. */
-  private serversChanged(): void {
-    if (!this.switcher) return;
-    Menu.setApplicationMenu(Menu.buildFromTemplate(this.menu()));
-    this.refresh();
-    this.manager.changed();
-  }
-
   /** A second launch (or a `codeden://` link on Windows and Linux) focuses this instance. */
   secondInstance(args: LaunchArgs): void {
     if (args.deepLink) this.openLink(args.deepLink);
@@ -278,12 +249,10 @@ export class DesktopApp {
     const hardStop = armQuitWatchdog(QUIT_LIMIT_MS + 5_000, this.log);
     void (async () => {
       try {
-        this.window?.allowClose();
-        this.hub?.allowClose();
-        this.hub?.stop();
-        this.manager?.close();
+        this.allowCloseAll();
         clearInterval(this.standaloneTimer);
         this.monitor?.stop();
+        for (const remote of this.remotes.values()) remote.monitor.stop();
         this.keepAwake.set(false);
         // Open session browsers move to the runner's Chromium before the views go.
         await this.browser?.quit();
@@ -307,10 +276,7 @@ export class DesktopApp {
 
   /** Before the installer runs: stop the server and drain the runner (as `codeden stop`). */
   private async prepareInstall(): Promise<void> {
-    this.window.allowClose();
-    this.hub.allowClose();
-    this.hub.stop();
-    this.manager.close();
+    this.allowCloseAll();
     this.monitor?.stop();
     const server = this.conn?.server;
     if (server) {
@@ -358,6 +324,7 @@ export class DesktopApp {
     this.status = status;
     const desktop = status.settings?.desktop;
     if (desktop) applyLaunchAtLogin(desktop.launchAtLogin);
+    // Keep-awake follows This Mac's agents only: a remote server's work doesn't run here.
     const running = status.activity?.running ?? 0;
     this.keepAwake.set(Boolean(desktop?.keepAwake ?? true) && running > 0);
     this.refresh();
@@ -370,10 +337,202 @@ export class DesktopApp {
       connected: this.status.connected,
       update: this.updates.state,
       autoUpdate: this.status.settings?.updates.mode === "auto",
-      remotes: this.hub?.summaries() ?? [],
+      servers: trayServers(this.store.list(), this.remoteStatuses()),
     });
     this.tray.update(view);
-    this.badge?.set(view.badge);
+    if (this.status.connected) this.localBadge = view.badge;
+    this.applyBadge();
+  }
+
+  private remoteStatuses(): Map<string, RemoteStatus> {
+    return new Map([...this.remotes].map(([id, r]) => [id, r.monitor.status]));
+  }
+
+  /** The app icon's badge: what waits on you on This Mac and on every remote server. */
+  private applyBadge(): void {
+    const remotes = [...this.remotes.values()].map((r): RemoteStatus => {
+      const status = r.monitor.status;
+      // While a server can't be polled, the count its own page set stands in.
+      return status.state !== "ok" && r.uiBadge > 0
+        ? { state: "ok", activity: { running: 0, waiting: r.uiBadge, inbox: 0 } }
+        : status;
+    });
+    this.badge?.set(totalBadge(this.localBadge, remotes));
+  }
+
+  private setBadge(caller: BridgeCaller, count: number): void {
+    if (!caller.server) this.localBadge = count;
+    else {
+      const remote = this.remotes.get(caller.server.id);
+      if (remote) remote.uiBadge = count;
+    }
+    this.applyBadge();
+  }
+
+  // ------------------------------------------------------------ other servers (§17.1)
+
+  private serverList(): DesktopServer[] {
+    return this.store.list().map((s) => ({
+      ...s,
+      open: s.url === null || this.remotes.has(s.id),
+    }));
+  }
+
+  /** Every window, This Mac's first. */
+  private windows(): Array<{ id: string; window: MainWindow }> {
+    return [
+      { id: LOCAL_SERVER_ID, window: this.window },
+      ...[...this.remotes.values()].map((r) => ({ id: r.id, window: r.window })),
+    ];
+  }
+
+  private allowCloseAll(): void {
+    for (const { window } of this.windows()) window?.allowClose();
+  }
+
+  private callerOf(webContentsId: number): BridgeCaller | null {
+    for (const { id, window } of this.windows()) {
+      if (
+        !window ||
+        window.window.isDestroyed() ||
+        window.window.webContents.id !== webContentsId
+      ) {
+        continue;
+      }
+      if (id === LOCAL_SERVER_ID) {
+        return { kind: "local", origin: window.serverOrigin, server: null, window: window.window };
+      }
+      const entry = this.store.get(id);
+      if (!entry) return null;
+      return {
+        kind: "remote",
+        origin: window.serverOrigin,
+        server: { id, name: entry.name },
+        window: window.window,
+      };
+    }
+    return null;
+  }
+
+  /** Create a remote server's window (hidden unless `show`) and start polling it. */
+  private startRemote(id: string, show: boolean): Remote | undefined {
+    const entry = this.store.get(id);
+    if (!entry) return undefined;
+    const existing = this.remotes.get(id);
+    if (existing) return existing;
+    const partition = partitionFor(id);
+    const window = new MainWindow({
+      preload: join(this.dist, "preload.cjs"),
+      icon: this.asset("icon.png"),
+      stateFile: join(homeFiles(this.args.home).desktop, `server-${id}-window.json`),
+      show,
+      // Closing hides it: its page keeps running for notifications, and the app stays in the tray.
+      hideOnClose: () => true,
+      log: this.log,
+      remote: { id, name: entry.name, partition },
+    });
+    const ses = session.fromPartition(partition);
+    const monitor = new RemoteMonitor({
+      baseUrl: entry.url,
+      // Through this server's own session, so its device cookie is sent and nothing else.
+      fetch: (url, init) => ses.fetch(url, init),
+      onChange: () => this.refresh(),
+    });
+    const remote: Remote = { id, window, monitor, loadFailed: false, uiBadge: 0 };
+    this.remotes.set(id, remote);
+    void this.loadRemote(remote, entry.url);
+    monitor.start();
+    return remote;
+  }
+
+  private async loadRemote(remote: Remote, url: string): Promise<void> {
+    try {
+      await remote.window.load(url);
+      remote.loadFailed = false;
+    } catch (error) {
+      remote.loadFailed = true;
+      this.log(`servers: could not load ${url}: ${redactToken(String(error)).slice(0, 300)}`);
+    }
+  }
+
+  /** Show a server's window: This Mac's, or a remote's (opened on first use). */
+  private openServer(id: string): void {
+    if (id === LOCAL_SERVER_ID) {
+      this.show();
+      return;
+    }
+    const entry = this.store.get(id);
+    if (!entry) return;
+    const remote = this.remotes.get(id) ?? this.startRemote(id, true);
+    if (!remote) return;
+    if (remote.loadFailed) void this.loadRemote(remote, entry.url);
+    remote.window.show();
+  }
+
+  private async addServer(input: DesktopServerAdd): Promise<DesktopServerResult> {
+    const result = await this.store.add(input);
+    if (result.ok) {
+      this.startRemote(result.server.id, false);
+      this.serversChanged();
+    }
+    return result;
+  }
+
+  private renameServer(id: string, name: string): DesktopServerResult {
+    const result = this.store.rename(id, name);
+    if (result.ok) {
+      this.remotes.get(id)?.window.rename(result.server.name);
+      this.serversChanged();
+    }
+    return result;
+  }
+
+  /** Remove a server: its window, its poller and everything stored in its session. */
+  private async removeServer(id: string): Promise<boolean> {
+    if (!this.store.remove(id)) return false;
+    const remote = this.remotes.get(id);
+    remote?.monitor.stop();
+    remote?.window.destroy();
+    this.remotes.delete(id);
+    const ses = session.fromPartition(partitionFor(id));
+    try {
+      await ses.clearStorageData();
+      await ses.clearCache();
+      await ses.clearAuthCache();
+    } catch (error) {
+      this.log(`servers: could not clear a removed server's session: ${String(error)}`);
+    }
+    rmSync(join(homeFiles(this.args.home).desktop, `server-${id}-window.json`), { force: true });
+    this.serversChanged();
+    return true;
+  }
+
+  /** The list changed: menus, tray, badge and every page's switcher follow. */
+  private serversChanged(): void {
+    Menu.setApplicationMenu(Menu.buildFromTemplate(this.menu()));
+    this.refresh();
+    for (const { window } of this.windows()) {
+      if (!window.window.isDestroyed()) window.window.webContents.send(CHANNELS.serversChanged);
+    }
+  }
+
+  /** The server manager lives in This Mac's window. */
+  private manageServers(add: boolean): void {
+    this.show();
+    if (this.loaded) this.window.window.webContents.send(CHANNELS.serversManage, { add });
+  }
+
+  private notificationClick(tag: string): void {
+    const remote = parseRemoteTag(tag);
+    if (!remote) {
+      this.show();
+      this.window.window.webContents.send(CHANNELS.notificationClick, tag);
+      return;
+    }
+    const target = this.remotes.get(remote.serverId);
+    if (!target) return;
+    target.window.show();
+    target.window.window.webContents.send(CHANNELS.notificationClick, remote.tag);
   }
 
   /** Attached to a server started by `codeden`: follow the update mode here (§17). */
@@ -413,16 +572,26 @@ export class DesktopApp {
   }
 
   private info(caller: BridgeCaller): DesktopInfo {
-    const remote = caller.kind === "remote";
+    if (caller.server) {
+      // A window on another server: nothing about this Mac's own server or its integrations.
+      return {
+        version: app.getVersion(),
+        platform: process.platform as DesktopInfo["platform"],
+        packaged: app.isPackaged,
+        ownsServer: false,
+        launchAtLoginSupported: false,
+        nativeBrowser: false,
+        server: { ...caller.server, remote: true },
+      };
+    }
     return {
       version: app.getVersion(),
       platform: process.platform as DesktopInfo["platform"],
       packaged: app.isPackaged,
-      // A remote window shows another machine's server: nothing here is its to own or start.
-      ownsServer: !remote && Boolean(this.conn?.server),
-      launchAtLoginSupported: !remote && launchAtLoginSupported,
-      nativeBrowser: !remote,
-      server: caller.server,
+      ownsServer: Boolean(this.conn?.server),
+      launchAtLoginSupported,
+      nativeBrowser: true,
+      server: { id: LOCAL_SERVER_ID, name: "This Mac", remote: false },
     };
   }
 
@@ -437,13 +606,17 @@ export class DesktopApp {
       openDocs: () => void shell.openExternal(DOCS_URL),
       openLogs: () => void shell.openPath(homeFiles(this.args.home).logs),
       quit: () => app.quit(),
-      servers: this.switcher.menuItems(),
       zoom: (command) => {
-        // The window in front: This Mac's or a remote server's, each keeps its own zoom.
-        const focused = BrowserWindow.getFocusedWindow();
-        const target = (focused && this.registry.window(focused.webContents.id)) || this.window;
-        target?.zoom(command);
-        if (target === this.window) this.browser?.browsers.layout();
+        // The window in front: each remembers its own zoom.
+        const focused = this.windows().find((w) => w.window.window.isFocused());
+        (focused?.window ?? this.window)?.zoom(command);
+        if (!focused || focused.id === LOCAL_SERVER_ID) this.browser?.browsers.layout();
+      },
+      servers: {
+        list: this.store.list(),
+        open: (id) => this.openServer(id),
+        add: () => this.manageServers(true),
+        manage: () => this.manageServers(false),
       },
     });
   }

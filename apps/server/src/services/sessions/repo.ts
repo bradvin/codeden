@@ -37,8 +37,11 @@ import { automationRuns, checkpoints, items, sessions, turns } from "../../db/sc
 import { turnsOldestFirst } from "../../db/turn-order";
 import type { EventStore } from "../../events/store";
 import { notFound } from "../errors";
+import type { RoleFallback } from "../orchestration/role-fallback";
 import { ACTIVE_RUN_STATUSES, ACTIVE_SESSION_STATUSES } from "./conflicts";
 import type { ForkStart } from "./fork";
+import type { PmRuntimeState } from "./pm-runtime-state";
+import type { PendingConfig } from "./reconfigure";
 import type { UnansweredStart } from "./unanswered-start";
 
 /** Session ids per query of `modelsOf`, so no query has too many parameters. */
@@ -58,43 +61,58 @@ export interface PendingStart {
  * feedback already sent per PR number (`PrFeedbackService`) and, for the orchestrator and PMs,
  * whether their latest turn carries the user's request (`LoopGuard`).
  */
-export type StoredStartMeta = SessionStartMeta & {
-  pending?: PendingStart | null;
-  prFeedback?: Record<string, { rounds: number; keys: string[] }>;
-  /**
-   * Whether the turn this role session's last accepted delivery started carries the user's
-   * request (false while a delivery is in flight), so a turn that outlives a server restart
-   * keeps it. Absent: never recorded, treated as not the user's.
-   */
-  turnFromUser?: boolean;
-  /** A fork's workspace plan (§9): prepared before any start until the worktree exists. */
-  forkStart?: ForkStart | null;
-  /**
-   * The workspace a start asked for (§9), until it is prepared: a first start that fails keeps
-   * it, and the next start (a message, a restart) prepares it first. A session never runs in the
-   * project folder in place of the worktree it asked for. Absent on sessions started before it
-   * existed, and on forks, which keep `forkStart`.
-   */
-  workspaceStart?: WorkspaceRequest | null;
-  /**
-   * A handoff's or a review's brief (§9) until a start delivers it: a first start that fails
-   * keeps it, and the next start sends it first, with the message that starts it.
-   */
-  handoffBrief?: UserInput | null;
-  /**
-   * The session was started or resumed on a provider that keeps its conversations out of its own
-   * apps' history (`capabilities.vendorHistory`). When a runner starts, its sweep archives such
-   * sessions' conversations that a crash or kill left listed (`ProviderHistoryService.sweep`).
-   * Older conversations stay for the user to hide (Settings > Providers).
-   */
-  vendorHistory?: boolean;
-  /**
-   * The last start failed only because the runner didn't answer it (`unanswered-start.ts`): no
-   * failure of the provider, and the session may still have opened. Cleared once a start or
-   * resume of it is answered.
-   */
-  startUnanswered?: UnansweredStart | null;
-};
+export type StoredStartMeta = SessionStartMeta &
+  PmRuntimeState & {
+    pendingConfig?: PendingConfig;
+    pending?: PendingStart | null;
+    prFeedback?: Record<string, { rounds: number; keys: string[] }>;
+    /**
+     * Whether the turn this role session's last accepted delivery started carries the user's
+     * request (false while a delivery is in flight), so a turn that outlives a server restart
+     * keeps it. Absent: never recorded, treated as not the user's.
+     */
+    turnFromUser?: boolean;
+    /**
+     * On an orchestrator or PM session: the role's provider setting (`settings.providers.<role>
+     * .provider`, `auto` included) the session was started under, or the latest value it was
+     * checked against. The role moves to a fresh session only when the setting differs from it
+     * (`RoleSessions`). Absent on sessions started before it was recorded, until that setting
+     * next changes.
+     */
+    roleProvider?: string;
+    /**
+     * On an orchestrator or PM session that runs on a fallback provider because the role's own hit
+     * its usage limit (`RoleFallback`): where the role goes back to, and when.
+     */
+    fallback?: RoleFallback | null;
+    /** A fork's workspace plan (§9): prepared before any start until the worktree exists. */
+    forkStart?: ForkStart | null;
+    /**
+     * The workspace a start asked for (§9), until it is prepared: a first start that fails keeps
+     * it, and the next start (a message, a restart) prepares it first. A session never runs in the
+     * project folder in place of the worktree it asked for. Absent on sessions started before it
+     * existed, and on forks, which keep `forkStart`.
+     */
+    workspaceStart?: WorkspaceRequest | null;
+    /**
+     * A handoff's or a review's brief (§9) until a start delivers it: a first start that fails
+     * keeps it, and the next start sends it first, with the message that starts it.
+     */
+    handoffBrief?: UserInput | null;
+    /**
+     * The session was started or resumed on a provider that keeps its conversations out of its own
+     * apps' history (`capabilities.vendorHistory`). When a runner starts, its sweep archives such
+     * sessions' conversations that a crash or kill left listed (`ProviderHistoryService.sweep`).
+     * Older conversations stay for the user to hide (Settings > Providers).
+     */
+    vendorHistory?: boolean;
+    /**
+     * The last start failed only because the runner didn't answer it (`unanswered-start.ts`): no
+     * failure of the provider, and the session may still have opened. Cleared once a start or
+     * resume of it is answered.
+     */
+    startUnanswered?: UnansweredStart | null;
+  };
 
 /**
  * A folder as `SessionRepo.inFolder` compares it: forward slashes, no trailing slash, ASCII
@@ -477,6 +495,24 @@ export class SessionRepo {
       .limit(1)
       .get();
     return row?.index ?? null;
+  }
+
+  latestFailedRootTurn(session: Session): Turn | undefined {
+    if (!session.rootThreadId) return;
+    const turn = this.db
+      .select()
+      .from(turns)
+      .where(
+        and(
+          eq(turns.sessionId, session.id),
+          eq(turns.threadId, session.rootThreadId),
+          eq(turns.status, "failed"),
+        ),
+      )
+      .orderBy(desc(turns.startedAt))
+      .limit(1)
+      .get();
+    return turn && rowToTurn(turn);
   }
 
   /** The ids of the session's root-thread turns, oldest first (by start); turn N is at N - 1. */

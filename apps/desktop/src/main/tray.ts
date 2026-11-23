@@ -56,15 +56,19 @@ export class AppTray {
     const view = this.view;
     const items: MenuItemConstructorOptions[] = [];
     for (const line of view?.lines ?? ["Starting..."]) items.push({ label: line, enabled: false });
-    for (const server of view?.servers ?? []) {
-      items.push({
-        label: server.line,
-        submenu: [{ label: "Open", click: () => this.actions.openServer(server.id) }],
-      });
-    }
     items.push({ type: "separator" });
     items.push({ label: "Open CodeDen", click: () => this.actions.open() });
     items.push({ label: "Open the inbox", click: () => this.actions.openInbox() });
+    const servers = view?.servers ?? [];
+    if (servers.length > 0) {
+      items.push({ type: "separator" });
+      for (const server of servers) {
+        items.push({
+          label: `${server.name}: ${server.summary}`,
+          submenu: [{ label: "Open", click: () => this.actions.openServer(server.id) }],
+        });
+      }
+    }
     const update = view?.update;
     if (update) {
       items.push({ type: "separator" });

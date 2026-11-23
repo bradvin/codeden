@@ -70,42 +70,6 @@ describe("platform selection (§13)", () => {
     expect(await p.launchAtLoginSupported()).toBe(true);
   });
 
-  it("behaves as a browser for the machine-bound features in a remote server's window", async () => {
-    const desktop = fakeDesktop();
-    const showServerMenu = vi.fn();
-    const info = async () => ({
-      version: "0.1.1",
-      platform: "darwin" as const,
-      packaged: true,
-      ownsServer: false,
-      launchAtLoginSupported: false,
-      server: { id: "abc123", name: "Omarchy", remote: true },
-    });
-    const p = selectPlatform({
-      codedenDesktop: { ...desktop.api, remote: true, info, showServerMenu },
-    });
-    expect(p.capabilities).toMatchObject({
-      folderPicker: false,
-      osIntegration: false,
-      nativeBrowser: false,
-      notifications: true,
-      badge: true,
-    });
-    expect(await p.pickFolder()).toBeNull();
-    expect(desktop.api.pickFolder).not.toHaveBeenCalled();
-    expect(await p.launchAtLoginSupported()).toBe(false);
-    expect(await p.serverSwitcher?.current()).toEqual({
-      id: "abc123",
-      name: "Omarchy",
-      remote: true,
-    });
-    p.serverSwitcher?.showMenu();
-    expect(showServerMenu).toHaveBeenCalled();
-    p.setBadge(2);
-    expect(desktop.api.setBadge).toHaveBeenCalledWith(2);
-    expect(selectPlatform({}).serverSwitcher).toBeNull();
-  });
-
   it("runs a notification's click handler once, by tag", () => {
     const desktop = fakeDesktop();
     const p = selectPlatform({ codedenDesktop: desktop.api });
@@ -140,5 +104,27 @@ describe("desktop updates in the UI (§17)", () => {
     expect(canUpdate({ source: "source" } as never)).toBe(false);
     expect(updateModeHelp("notify", "desktop")).toContain("GitHub Releases");
     expect(updateModeHelp("notify", "packaged")).toContain("npm registry");
+  });
+});
+
+describe("a window on another CodeDen server (§17.1)", () => {
+  it("acts as a browser for folders and session browsers, but keeps native notifications", async () => {
+    const desktop = fakeDesktop();
+    const p = selectPlatform({
+      codedenDesktop: { ...desktop.api, remote: { id: "abcdef012345" }, browser: undefined },
+    });
+    expect(p.capabilities).toMatchObject({
+      folderPicker: false,
+      osIntegration: false,
+      nativeBrowser: false,
+      notifications: true,
+      badge: true,
+    });
+    expect(p.nativeBrowser).toBeNull();
+    expect(await p.pickFolder()).toBeNull();
+    expect(desktop.api.pickFolder).not.toHaveBeenCalled();
+    expect(await p.launchAtLoginSupported()).toBe(false);
+    p.notify("Approval needed", { tag: "t1" });
+    expect(desktop.notified).toHaveLength(1);
   });
 });

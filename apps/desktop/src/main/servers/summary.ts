@@ -1,38 +1,48 @@
-import type { ActivitySummary, RemoteServerState } from "@codeden/contracts";
+import type { DesktopServer } from "@codeden/contracts";
+import type { RemoteStatus } from "./monitor";
 
-/** One server's line in the aggregate: This Mac or a remote. */
-export interface ServerSummary {
+/** What waits on a person on one server: the larger of waiting agents and open inbox items. */
+export function waitingOn(activity: { waiting: number; inbox: number } | null): number {
+  return activity ? Math.max(activity.inbox, activity.waiting) : 0;
+}
+
+/** The dock badge: This Mac's count plus every reachable, signed-in remote's. */
+export function totalBadge(local: number, remotes: readonly RemoteStatus[]): number {
+  return remotes.reduce(
+    (sum, r) => sum + (r.state === "ok" ? waitingOn(r.activity) : 0),
+    Math.max(0, local),
+  );
+}
+
+/** One server's tray line (Open is its own menu item). */
+export interface TrayServer {
   id: string;
   name: string;
-  /** `null` for This Mac. */
-  state: RemoteServerState | null;
-  /** The server answered the last poll. */
-  connected: boolean;
-  activity: ActivitySummary | null;
+  summary: string;
 }
 
-/** What waits on the user on one server (the same figure the app badge always showed). */
-export function waitingOn(server: Pick<ServerSummary, "connected" | "activity">): number {
-  const a = server.activity;
-  return server.connected && a ? Math.max(a.inbox, a.waiting) : 0;
+/** `2 running, 1 waiting`, or why there are no counts. */
+export function serverSummary(status: RemoteStatus): string {
+  if (status.state === "signed-out") return "signed out";
+  if (status.state === "unreachable") return "unreachable";
+  if (!status.activity) return "connecting...";
+  const { running, waiting } = status.activity;
+  return (
+    [running > 0 ? `${running} running` : null, waiting > 0 ? `${waiting} waiting` : null]
+      .filter(Boolean)
+      .join(", ") || "idle"
+  );
 }
 
-/** The app badge: waiting on you across This Mac and every remote that answers. */
-export function totalBadge(servers: readonly ServerSummary[]): number {
-  return servers.reduce((sum, s) => sum + waitingOn(s), 0);
-}
-
-const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
-
-/** A remote's line in the tray menu (and the tooltip's detail): its state or its counts. */
-export function remoteLine(server: ServerSummary): string {
-  if (server.state === "signed-out") return `${server.name}: signed out`;
-  if (server.state === "unreachable") return `${server.name}: unreachable`;
-  if (server.state === "connecting" || !server.activity) return `${server.name}: connecting...`;
-  const { running, waiting } = server.activity;
-  const parts = [
-    running > 0 ? `${plural(running, "agent", "agents")} running` : "idle",
-    waiting > 0 ? `${waiting} waiting` : null,
-  ].filter(Boolean);
-  return `${server.name}: ${parts.join(", ")}`;
+export function trayServers(
+  servers: readonly DesktopServer[],
+  statuses: ReadonlyMap<string, RemoteStatus>,
+): TrayServer[] {
+  return servers
+    .filter((s) => s.url !== null)
+    .map((s) => ({
+      id: s.id,
+      name: s.name,
+      summary: serverSummary(statuses.get(s.id) ?? { state: "starting", activity: null }),
+    }));
 }

@@ -8,6 +8,8 @@ import { runnerErrorCode } from "../runner-port";
  */
 export interface DecoratedInput {
   input: UserInput;
+  /** Notices whose receipt is committed with a durable PM delivery. */
+  noticeIds?: string[];
   delivered?: () => void;
   failed?: (error: unknown) => void;
 }
@@ -20,6 +22,7 @@ export type InputDecorator = (
   session: Session,
   input: UserInput,
   from: QueueSender,
+  durable?: boolean,
 ) => DecoratedInput;
 
 /**

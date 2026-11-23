@@ -1,6 +1,5 @@
 import { z } from "zod";
 import { Id, Timestamp } from "./common";
-import { DesktopServerRef } from "./desktop-servers";
 import type { InboxItem } from "./entities/inbox";
 import type { Session } from "./entities/session";
 import { BrowserCookie, BrowserHandoffTab, BrowserRelayEndpoint } from "./runner/browser";
@@ -221,12 +220,44 @@ export const DesktopInfo = z.object({
    */
   nativeBrowser: z.boolean().optional(),
   /**
-   * The server this window shows: This Mac, or another machine's CodeDen (`remote`), where the
-   * UI behaves as in a normal browser. Absent from older apps (always This Mac).
+   * The server this window shows. `remote` is true in a window on another CodeDen server
+   * (§17.1); absent from older apps, which only ever showed this machine's server.
    */
-  server: DesktopServerRef.optional(),
+  server: z.object({ id: z.string(), name: z.string(), remote: z.boolean() }).optional(),
 });
 export type DesktopInfo = z.infer<typeof DesktopInfo>;
+
+// ---------------------------------------------------------------- other servers (§17.1)
+
+/** Longest name of a server in the desktop app's list. */
+export const DESKTOP_SERVER_NAME_MAX = 40;
+/** Most remote servers the desktop app lists. */
+export const DESKTOP_SERVERS_MAX = 20;
+/** The id of the server this machine runs ("This Mac"); never stored, never removable. */
+export const LOCAL_SERVER_ID = "local";
+
+/** A server in the desktop app's list: This Mac first (`url` null), then the remote ones. */
+export const DesktopServer = z.object({
+  id: z.string().min(1).max(40),
+  name: z.string().min(1).max(DESKTOP_SERVER_NAME_MAX),
+  /** `https://host[:port]` of a remote server; null for This Mac. */
+  url: z.string().nullable(),
+  /** Its window is open (shown or hidden in the tray). */
+  open: z.boolean().optional(),
+});
+export type DesktopServer = z.infer<typeof DesktopServer>;
+
+/** `servers.add` over the bridge (This Mac's window only). */
+export const DesktopServerAdd = z.object({
+  name: z.string().max(200),
+  url: z.string().max(300),
+});
+export type DesktopServerAdd = z.infer<typeof DesktopServerAdd>;
+
+/** What a change to the list answers: the new entry (with a warning), or why it was refused. */
+export type DesktopServerResult =
+  | { ok: true; server: DesktopServer; warning?: string }
+  | { ok: false; error: string };
 
 /** A native notification request from the UI. */
 export const DesktopNotification = z.object({
@@ -244,11 +275,6 @@ export type DesktopNotification = z.infer<typeof DesktopNotification>;
  * the main process.
  */
 export interface CodedenDesktopApi {
-  /**
-   * True in a window on another machine's server. A hint for the UI to pick its browser
-   * behaviour before `info()` answers; the main process enforces what a remote window may call.
-   */
-  readonly remote?: boolean;
   info(): Promise<DesktopInfo>;
   /** Native folder picker; resolves with an absolute path, or null when cancelled. */
   pickFolder(opts?: { title?: string; defaultPath?: string }): Promise<string | null>;
@@ -261,13 +287,30 @@ export interface CodedenDesktopApi {
   setBadge(count: number): void;
   /** Called with a UI route (e.g. `/sessions/<id>`) when a `codeden://` link is opened. */
   onNavigate(listener: (path: string) => void): () => void;
-  /** Native browser views (§17 Phase 2); absent from older apps and from remote windows. */
+  /** Native browser views (§17 Phase 2); absent from older apps. */
   browser?: CodedenDesktopBrowserApi;
   /**
-   * Pop up the native servers menu (This Mac, the other servers, Add and Manage). The menu is
-   * built in the main process, so no server list reaches the page. Absent from older apps.
+   * This window shows another CodeDen server (§17.1): known synchronously, from the preload's
+   * launch arguments. The UI then behaves as in a browser: no native folder picker or session
+   * browser views. Absent in This Mac's window and in older apps.
    */
-  showServerMenu?(): void;
+  remote?: { id: string };
+  /** Other servers (§17.1); absent from older apps. */
+  servers?: CodedenDesktopServersApi;
+}
+
+/** The server list. `list` and `open` work in every window; the rest only in This Mac's. */
+export interface CodedenDesktopServersApi {
+  list(): Promise<DesktopServer[]>;
+  /** Show (or open) a server's window. */
+  open(id: string): void;
+  add(server: DesktopServerAdd): Promise<DesktopServerResult>;
+  rename(id: string, name: string): Promise<DesktopServerResult>;
+  remove(id: string): Promise<boolean>;
+  /** The menu asked for the server manager (`add`: with the Add form open). */
+  onManage(listener: (opts: { add: boolean }) => void): () => void;
+  /** The list changed (added, renamed, removed). */
+  onChange(listener: () => void): () => void;
 }
 
 // ---------------------------------------------------------------- native browser views

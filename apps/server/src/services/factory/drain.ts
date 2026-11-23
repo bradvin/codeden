@@ -11,6 +11,7 @@ import {
 } from "@codeden/contracts";
 import { type FactoryContext, factoryNotice, raiseInbox } from "./context";
 import { stoppedLoop, stopWork } from "./controls";
+import { itemHeld } from "./hold";
 import { awaitedProvider } from "./provider-wait";
 import { recoverable } from "./recover";
 import { unverifiedRevert } from "./revert-watch";
@@ -73,7 +74,8 @@ function stillInFlight(
   // A revert whose CI on the default branch never reported: the user was asked to look.
   if (unverifiedRevert(item)) return false;
   if (MOVING.includes(item.stage)) return !waitsForPersonsMerge(item, facts.limits);
-  if (item.stage === "backlog") return queued;
+  // A held one (`hold.ts`) stays parked, so it never holds the drain up.
+  if (item.stage === "backlog") return queued && !itemHeld(ctx, item);
   if (item.stage !== "failed" || !recoverable(item)) return false;
   return awaitedProvider(ctx, item, facts.available) === undefined;
 }
