@@ -101,6 +101,20 @@ export function proxyClientOf(c: Context): { address: string | null } | undefine
   return forwarded === undefined ? undefined : { address: forwarded };
 }
 
+/** Headers a reverse proxy adds; a browser on this machine never sends them itself. */
+const FORWARDING_HEADERS = [
+  "x-forwarded-for",
+  "x-forwarded-host",
+  "x-forwarded-proto",
+  "forwarded",
+  "x-real-ip",
+];
+
+/** Did a proxy forward this request (it carries any of the proxy's forwarding headers)? */
+function forwardedByProxy(c: Context): boolean {
+  return FORWARDING_HEADERS.some((name) => c.req.header(name) !== undefined);
+}
+
 /** First `X-Forwarded-For` address, when it is a plain IP (else null). */
 function firstForwardedAddress(header: string | undefined): string | null {
   const first = header?.split(",")[0]?.trim();
@@ -159,7 +173,8 @@ function isShellRequest(c: Context): boolean {
  *    or `?token=` (exchanged for the cookie and stripped from the URL with a redirect).
  * 3b. A request whose `Host` is a trusted origin's (a reverse proxy on this machine, §15.1)
  *    is remote even from a loopback peer, with its own `Origin` rule, and only while network
- *    access is on.
+ *    access is on. A loopback request carrying a proxy's forwarding headers for any other
+ *    `Host` is refused, so a proxy's client can't name a loopback host and pass as local.
  * 4. Remote peers need a remote session cookie (from the password sign-in); the install token
  *    is never accepted from them, and loopback-only paths answer 404.
  */
@@ -180,6 +195,11 @@ export function securityMiddleware(opts: SecurityOptions): MiddlewareHandler {
         vars.set("forwardedFor", firstForwardedAddress(c.req.header("x-forwarded-for")));
         if (env?.incoming?.socket) proxiedSockets.add(env.incoming.socket);
       }
+    } else if (forwardedByProxy(c) && isLoopbackAddress(peerAddress(c))) {
+      // A proxy on this machine forwarded it for a host that isn't trusted. Tailscale Serve picks
+      // its backend by TLS SNI and passes on the client's own `Host`, so a client could name
+      // 127.0.0.1 and look local: a proxied request is never local.
+      return c.text("Forbidden host", 403);
     }
     const remote = isRemoteRequest(c);
     if (remote && !networkOn) return c.text("Network access is off", 403);

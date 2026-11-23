@@ -183,6 +183,8 @@ describe("switching a project manager's provider", () => {
     await waitUntil(() => client.mcpProxyUrl ?? undefined);
     const res = await api("POST", "/projects", { source: { type: "local", path: projectPath } });
     projectId = CreateProjectResponse.parse(res.body).project.id;
+    // The role's own move at a usage limit is a different path; these tests switch by hand.
+    await api("PATCH", "/settings", { providers: { autoSwitchOnLimit: false } });
   });
 
   afterEach(async () => {

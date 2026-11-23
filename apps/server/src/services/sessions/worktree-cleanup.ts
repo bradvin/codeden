@@ -1,10 +1,11 @@
-import type {
-  ArchiveSessionResponse,
-  RawEventEnvelope,
-  Session,
-  SessionStatus,
-  Settings,
-  WorktreeCleanupOutcome,
+import {
+  ACTIVE_SESSION_STATUSES,
+  type ArchiveSessionResponse,
+  type RawEventEnvelope,
+  type Session,
+  type SessionStatus,
+  type Settings,
+  type WorktreeCleanupOutcome,
 } from "@codeden/contracts";
 import type { EventStore } from "../../events/store";
 import type { SandboxService } from "../../execution/sandboxes";
@@ -12,6 +13,7 @@ import { badRequest, errorMessage } from "../errors";
 import type { InboxService } from "../inbox-service";
 import type { ProjectService } from "../projects/project-service";
 import { type RunnerDeps, runnerErrorCode, runnerForSession } from "../runner-port";
+import { archivedRoleRefusal, isArchivedRoleSession } from "./archived-role";
 import type { SessionRepo } from "./repo";
 
 export interface WorktreeCleanupDeps extends RunnerDeps {
@@ -51,13 +53,7 @@ export const RETRY_DELAYS_MS: readonly number[] = [2_000, 6_000];
 /** Runner errors that a later attempt can get past (a file in use, a delete that failed). */
 const TRANSIENT = new Set(["worktree_in_use", "remove_failed"]);
 /** Sessions that may be using their worktree right now; never cleaned up. */
-const IN_USE: ReadonlySet<SessionStatus> = new Set([
-  "created",
-  "queued",
-  "starting",
-  "running",
-  "waiting",
-]);
+const IN_USE: ReadonlySet<SessionStatus> = new Set(ACTIVE_SESSION_STATUSES);
 
 const outcome = (
   status: WorktreeCleanupOutcome["status"],
@@ -161,8 +157,13 @@ export class WorktreeCleanup {
     return { session: this.deps.repo.get(id), worktree };
   }
 
-  /** Show an archived session again. Its worktree comes back with the next message. */
+  /**
+   * Show an archived session again. Its worktree comes back with the next message. An archived
+   * PM or orchestrator conversation stays archived: a newer session holds the role (§8.1).
+   */
   unarchive(id: string): Session {
+    const current = this.deps.repo.get(id);
+    if (isArchivedRoleSession(current)) throw archivedRoleRefusal(current);
     this.forced.delete(id);
     return this.deps.repo.update(id, (s) => (s.archivedAt ? { ...s, archivedAt: null } : s));
   }

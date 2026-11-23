@@ -74,7 +74,7 @@ On the phone (on your tailnet), open `https://<machine>.<tailnet>.ts.net:8445`, 
 
 Keep **Tailscale Funnel off** for CodeDen: Funnel puts it on the public internet and isn't supported. Only a proxy on this computer, which you named with `origin add`, is trusted; a proxy on another machine isn't supported. Turning network access off, or removing the origin, ends access through it at once.
 
-How CodeDen treats a request for a trusted address: it counts as coming from another device even though the proxy connects from this computer, so it needs the password session, never the install token, and `/mcp` answers 404. CodeDen does not log anyone in from Tailscale's identity headers (`Tailscale-User-Login` and others): any program on this computer could send those itself. The proxy's `X-Forwarded-For` is used only to tell devices apart for sign-in throttling and to show an address (marked *reported by proxy*) in Signed-in devices and the log.
+How CodeDen treats a request for a trusted address: it counts as coming from another device even though the proxy connects from this computer, so it needs the password session, never the install token, and `/mcp` answers 404. A request the proxy forwards for any other name (a client can put `127.0.0.1` in its `Host` header) is refused, so nothing through the proxy counts as this computer. CodeDen does not log anyone in from Tailscale's identity headers (`Tailscale-User-Login` and others): any program on this computer could send those itself. The proxy's `X-Forwarded-For` is used only to tell devices apart for sign-in throttling and to show an address (marked *reported by proxy*) in Signed-in devices and the log.
 
 ## Signed-in devices
 
