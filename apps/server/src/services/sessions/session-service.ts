@@ -8,6 +8,7 @@ import type {
   HandoffSessionResponse,
   JsonValue,
   ProviderInfo,
+  QueuedMessage,
   QueueSender,
   RespondRequest,
   ReviewSessionRequest,
@@ -249,6 +250,10 @@ export class SessionService {
       pending: queued
         ? { input: req.input && this.externalize(session, req.input), workspace }
         : null,
+      // What a role session is compared with when its role's provider setting changes.
+      ...(req.role !== "agent" && {
+        roleProvider: this.deps.settings.get().providers[req.role].provider,
+      }),
     };
     repo.create(session, meta);
     if (queued) {
@@ -473,6 +478,38 @@ export class SessionService {
     return this.deps.repo.update(id, (s) =>
       FINISHED.has(s.status) ? s : { ...s, status: "stopped", endedAt: new Date().toISOString() },
     );
+  }
+
+  /**
+   * Stop a session whose queued messages move on to another session (a role moved to another
+   * provider, `RoleSessions`): they are returned instead of dropped. They leave the queue
+   * before anything is awaited, so no delivery can send one to the session being stopped; if
+   * the stop fails they go back in their places.
+   */
+  async stopKeepingQueue(id: string): Promise<QueuedMessage[]> {
+    const taken = this.deps.outbox.clear(id);
+    try {
+      await this.stop(id);
+    } catch (error) {
+      this.restoreQueued(taken);
+      throw error;
+    }
+    // Whatever was queued while the runner stopped it.
+    return [...taken, ...this.deps.outbox.clear(id)];
+  }
+
+  /** Put messages taken with `stopKeepingQueue` back in their session's queue, in their places. */
+  restoreQueued(messages: QueuedMessage[]): void {
+    for (const message of messages) this.deps.outbox.restore(message);
+  }
+
+  /**
+   * Queue messages taken from another session (`stopKeepingQueue`) for this one, in their
+   * order and each with its sender. They are delivered like any queued message.
+   */
+  adoptQueued(id: string, messages: QueuedMessage[]): void {
+    for (const message of messages) this.deps.outbox.push(id, message.input, message.from);
+    if (messages.length > 0) this.flushIfSettled(id);
   }
 
   /**
@@ -701,16 +738,32 @@ export class SessionService {
     const connected = this.deps.runner.isConnected();
     if (req.provider && req.provider !== "auto") {
       if (connected && !available.includes(req.provider)) {
-        throw badRequest(`Provider ${req.provider} is not available`, "unknown_provider");
+        throw badRequest(
+          `Provider ${req.provider} is not available. Loaded providers: ${available.join(", ") || "none"}`,
+          "unknown_provider",
+        );
       }
       return req.provider;
     }
-    const roleDefault = this.deps.settings.get().providers[req.role].provider;
+    const configured = this.configuredProvider(req.role, projectDefault);
+    if (configured) return configured;
+    const auto = [...AUTO_ORDER, ...available].find((id) => available.includes(id));
+    return auto ?? "claude";
+  }
+
+  /**
+   * The provider that settings name for a role's new sessions: the project's default, else the
+   * role's (`settings.providers.<role>`). Null when both leave it to Auto, or name a provider
+   * the connected runner doesn't have.
+   */
+  configuredProvider(role: Session["role"], projectDefault: string | null): string | null {
+    const available = this.deps.runner.providers().map((p) => p.id);
+    const connected = this.deps.runner.isConnected();
+    const roleDefault = this.deps.settings.get().providers[role].provider;
     for (const choice of [projectDefault, roleDefault === "auto" ? null : roleDefault]) {
       if (choice && (!connected || available.includes(choice))) return choice;
     }
-    const auto = [...AUTO_ORDER, ...available].find((id) => available.includes(id));
-    return auto ?? "claude";
+    return null;
   }
 
   private buildSession(

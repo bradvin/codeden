@@ -67,6 +67,14 @@ export type StoredStartMeta = SessionStartMeta & {
    * keeps it. Absent: never recorded, treated as not the user's.
    */
   turnFromUser?: boolean;
+  /**
+   * On an orchestrator or PM session: the role's provider setting (`settings.providers.<role>
+   * .provider`, `auto` included) the session was started under, or the latest value it was
+   * checked against. The role moves to a fresh session only when the setting differs from it
+   * (`RoleSessions`). Absent on sessions started before it was recorded, until that setting
+   * next changes.
+   */
+  roleProvider?: string;
   /** A fork's workspace plan (§9): prepared before any start until the worktree exists. */
   forkStart?: ForkStart | null;
   /**

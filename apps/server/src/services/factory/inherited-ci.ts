@@ -7,6 +7,7 @@ import type { FactoryPr } from "./github-port";
 import { closeInboxFor, githubRefused } from "./merge";
 import { repairsMain } from "./overlap";
 import { MAIN_RED, trackedHead, UPDATE } from "./rebase";
+import { endedByStop } from "./stops";
 
 /**
  * Red CI that is the default branch's (§10.1, Review and revise). While CI on the default
@@ -127,6 +128,8 @@ async function updateWithMain(
 /** Stopped on its merge checks with red CI its only failed check. */
 function failedOnCiOnly(item: FactoryItem): boolean {
   if (item.failureKind !== "checks" || item.review?.verdict === "reject") return false;
+  // Stopped on purpose (`stops.ts`): only a Retry runs it again.
+  if (endedByStop(item)) return false;
   const failed = failedChecks(item.checks);
   return (
     failed.length === 1 &&

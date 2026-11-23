@@ -21,6 +21,7 @@ import { awaitRevertCi, revertStillRed } from "./revert-watch";
 import { advanceSpec } from "./spec-approval";
 import { builderOpenPr, holdEarlyPr } from "./spec-early-pr";
 import { REVERTED_AT, revertedAt } from "./stats";
+import { endStopped, stoppedOnPurpose } from "./stops";
 import { awaitTurnRaceResume, BUILDER_FAILED_REASON } from "./turn-race";
 
 const BUSY = new Set(["created", "queued", "starting", "running", "waiting"]);
@@ -51,6 +52,8 @@ export async function advanceBuilding(
     if (revert) return revertBlocked(ctx, project, loop, item, lowerFirst(reason));
     return failItem(ctx, loop, item, reason);
   };
+  // Its builder stopped on purpose, with a reason: that call, never a failure (`stops.ts`).
+  if (stoppedOnPurpose(ctx, item)) return endStopped(ctx, loop, item);
   // A spec waiting for a person, or their decision on its way to the builder (`spec-approval.ts`).
   const held = await advanceSpec(ctx, project, loop, item, s);
   if (held) return held;

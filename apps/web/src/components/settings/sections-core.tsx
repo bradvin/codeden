@@ -2,11 +2,12 @@ import type { Role } from "@codeden/contracts";
 import { ProviderMark } from "@/components/common/bits";
 import { NumberField } from "@/components/common/number-field";
 import { PickerFooterChoice } from "@/components/composer/model-picker/footer";
+import { providerAvailability } from "@/components/composer/model-picker/logic";
 import { ModelPicker } from "@/components/composer/model-picker/model-picker";
 import { KillSwitchButton } from "@/components/factory/kill-switch";
 import { AUTONOMY } from "@/components/thread/autonomy";
 import { Switch } from "@/components/ui/switch";
-import { useSnapshotData } from "@/lib/queries";
+import { useSetupStatus, useSnapshotData } from "@/lib/queries";
 import { cn } from "@/lib/utils";
 import { type ThemePreference, useThemeStore } from "@/stores/theme";
 import { AgentEnvironmentSettings } from "./agent-environment";
@@ -14,6 +15,7 @@ import { CustomModelSettings } from "./custom-models";
 import { ModelVisibilitySettings } from "./model-visibility";
 import { ProviderHistorySettings } from "./provider-history";
 import { Segmented, SettingRow, SettingsSection, useSettings } from "./settings-ui";
+import { TokenSaverSettingsSection } from "./token-saver";
 import { UpdateModeSetting } from "./update-mode";
 
 export function GeneralSettings() {
@@ -81,6 +83,7 @@ export function GeneralSettings() {
           />
         </SettingRow>
       </SettingsSection>
+      <TokenSaverSettingsSection />
       <AgentEnvironmentSettings />
       <SettingsSection title="Background work">
         <SettingRow
@@ -146,28 +149,47 @@ const roles: { role: Role; label: string; help: string }[] = [
 export function ProviderSettings() {
   const { settings, update } = useSettings();
   const providers = useSnapshotData((s) => s.runner.providers, []);
+  // The same checks as the setup checklist, so the two screens never disagree.
+  const checks = useSetupStatus({ staleTime: 60_000 }).data?.checks;
   return (
     <>
       <SettingsSection
         title="Installed providers"
         description="Detected on this machine and reused with their own logins."
       >
-        {providers.map((p) => (
-          <SettingRow
-            key={p.id}
-            label={p.displayName}
-            help={`${p.models.length} models · ${Object.entries(p.capabilities).filter(([, v]) => v).length} capabilities`}
-          >
-            <div className="flex items-center gap-2">
-              <ProviderMark provider={p.id} className="size-5" />
-              <span className="rounded-full bg-status-done/12 px-2 py-0.5 text-2xs text-status-done">
-                Ready
-              </span>
-            </div>
-          </SettingRow>
-        ))}
+        {providers.map((p) => {
+          const availability = providerAvailability(p.id, checks);
+          return (
+            <SettingRow
+              key={p.id}
+              label={p.displayName}
+              help={
+                availability.ready
+                  ? `${p.models.length} models · ${Object.entries(p.capabilities).filter(([, v]) => v).length} capabilities`
+                  : (availability.detail ?? undefined)
+              }
+            >
+              <div className="flex items-center gap-2">
+                <ProviderMark provider={p.id} className="size-5" />
+                <span
+                  className={cn(
+                    "rounded-full px-2 py-0.5 text-2xs",
+                    availability.ready
+                      ? "bg-status-done/12 text-status-done"
+                      : "bg-status-waiting/12 text-status-waiting",
+                  )}
+                >
+                  {availability.ready ? "Ready" : availability.reason}
+                </span>
+              </div>
+            </SettingRow>
+          );
+        })}
       </SettingsSection>
-      <SettingsSection title="Defaults per role" description="Each role can run on any provider.">
+      <SettingsSection
+        title="Defaults per role"
+        description="Each role can run on any provider. Changing the provider of the orchestrator or of project managers starts a fresh conversation for them on their next message."
+      >
         {roles.map(({ role, label, help }) => {
           const current = settings.providers[role];
           const auto = current.provider === "auto";

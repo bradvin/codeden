@@ -14,12 +14,14 @@ import {
 } from "@codeden/contracts";
 import type { Db } from "../../db/client";
 import type { EventStore } from "../../events/store";
+import type { SettingsStore } from "../../settings-store";
 import type { ArtifactService } from "../artifacts";
 import { isValidTimezone, machineTimezone } from "../automations/cron";
 import { errorMessage } from "../errors";
 import type { TrustedAuthors } from "../github/review-trust";
 import type { InboxService } from "../inbox-service";
 import type { ProjectService } from "../projects/project-service";
+import type { RunnerPort } from "../runner-port";
 import { mayHaveStarted } from "../sessions/input-decorator";
 import type { SessionRepo } from "../sessions/repo";
 import type { SessionService } from "../sessions/session-service";
@@ -71,6 +73,9 @@ export interface OrchestrationDeps {
   sessions: SessionService;
   projects: ProjectService;
   inbox: InboxService;
+  settings: Pick<SettingsStore, "get">;
+  /** The home runner, whose providers the orchestrator and the PMs can run on. */
+  runner: Pick<RunnerPort, "isConnected" | "providers">;
   /** Saves the pasted images of a conflicting start before it is recorded. */
   artifacts: Pick<ArtifactService, "externalizeAttachments">;
   github?: GithubPort;
@@ -111,7 +116,11 @@ export class OrchestrationService {
   private unsubscribe: (() => void) | undefined;
 
   constructor(private readonly deps: OrchestrationDeps) {
-    this.roles = new RoleSessions(deps);
+    this.roles = new RoleSessions({
+      ...deps,
+      // An `ask_pm` whose question moved with the queue gets its answer from the new session.
+      onMoved: (from, to) => this.asks.retarget(from.id, to.id),
+    });
     this.notices = new NoticeStore(deps.db, deps.store);
     this.cards = new NoticeCards(deps.store);
     this.notes = new ProjectNotes(deps.projects);
