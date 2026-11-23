@@ -1,5 +1,5 @@
 import type { DesktopServer } from "@codeden/contracts";
-import { LOCAL_SERVER_ID } from "@codeden/contracts";
+import { LOCAL_SERVER_ID, LOCAL_SERVER_NAME } from "@codeden/contracts";
 import { Pencil, Plus, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
@@ -15,7 +15,7 @@ import { Input } from "@/components/ui/input";
 import { currentServerId, desktopServersApi, useDesktopServers } from "@/lib/desktop-servers";
 
 /**
- * The server manager (§17.1), in This Mac's desktop window: add another CodeDen server by its
+ * The server manager (§17.1), in the local desktop window: add another CodeDen server by its
  * https address, rename it, remove it. The app checks `/api/health` before saving; removing
  * signs this device out of that server locally.
  */
@@ -54,7 +54,7 @@ export function ServersDialog() {
           </DialogDescription>
         </DialogHeader>
         <ul className="flex flex-col gap-1">
-          <li className="rounded-md border px-3 py-2 text-sm">This Mac</li>
+          <li className="rounded-md border px-3 py-2 text-sm">{LOCAL_SERVER_NAME}</li>
           {remotes.map((s) => (
             <ServerRow key={s.id} server={s} />
           ))}

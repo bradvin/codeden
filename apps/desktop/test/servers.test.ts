@@ -84,9 +84,9 @@ describe("the server list", () => {
       check: async () => ({ ok: true, version }),
     });
 
-  it("lists This Mac first, adds, renames, removes and persists", async () => {
+  it("lists the local server first, adds, renames, removes and persists", async () => {
     const list = store();
-    expect(list.list()).toEqual([{ id: "local", name: "This Mac", url: null }]);
+    expect(list.list()).toEqual([{ id: "local", name: "local", url: null }]);
     const added = await list.add({ name: "  Omarchy ", url: ORIGIN });
     expect(added.ok && added.server).toMatchObject({ name: "Omarchy", url: ORIGIN });
     expect(added.ok && added.warning).toBeUndefined();
@@ -98,7 +98,7 @@ describe("the server list", () => {
       store()
         .list()
         .map((s) => s.name),
-    ).toEqual(["This Mac", "Omarchy"]);
+    ).toEqual(["local", "Omarchy"]);
     expect(list.rename(id, "Oma").ok).toBe(true);
     expect(store().get(id)?.name).toBe("Oma");
     expect(list.rename(id, "   ").ok).toBe(false);
@@ -146,7 +146,7 @@ describe("the server list", () => {
       store()
         .list()
         .map((s) => s.name),
-    ).toEqual(["This Mac", "Good"]);
+    ).toEqual(["local", "Good"]);
     expect(readFileSync(file, "utf8")).toContain("Plain"); // read never rewrites
   });
 });
@@ -171,7 +171,7 @@ describe("bridge gate", () => {
     }
     expect(REMOTE_CALLS.has("pickFolder")).toBe(false);
   });
-  it("lets This Mac's window use everything", () => {
+  it("lets the local window use everything", () => {
     for (const call of ["pickFolder", "browser", "servers.manage", "notify"] as const) {
       expect(bridgeAllowed(call, local, "http://127.0.0.1:4317/")).toBe(true);
     }
@@ -243,7 +243,7 @@ describe("badge and tray across servers", () => {
     activity: { running, waiting, inbox },
   });
 
-  it("totals waiting on This Mac and every reachable remote", () => {
+  it("totals waiting on the local server and every reachable remote", () => {
     expect(totalBadge(2, [ok(1, 3), ok(0, 0, 4)])).toBe(2 + 3 + 4);
     expect(
       totalBadge(0, [{ state: "unreachable", activity: { running: 0, waiting: 9, inbox: 9 } }]),
@@ -252,7 +252,7 @@ describe("badge and tray across servers", () => {
   });
   it("lists each remote with its counts or its state", () => {
     const servers = [
-      { id: "local", name: "This Mac", url: null },
+      { id: "local", name: "local", url: null },
       { id: "a", name: "Omarchy", url: ORIGIN },
       { id: "b", name: "Lab", url: "https://lab.ts.net" },
       { id: "c", name: "New", url: "https://new.ts.net" },

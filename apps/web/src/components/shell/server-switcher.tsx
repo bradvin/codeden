@@ -1,3 +1,4 @@
+import { LOCAL_SERVER_ID, LOCAL_SERVER_NAME } from "@codeden/contracts";
 import { Check, ChevronsUpDown, Server, Settings2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -10,7 +11,7 @@ import {
 import { currentServerId, desktopServersApi, useDesktopServers } from "@/lib/desktop-servers";
 
 /**
- * Which CodeDen server this desktop window shows ("This Mac", "Omarchy"), with a menu to open
+ * Which CodeDen server this desktop window shows, with a menu to open
  * another server's window (§17.1). Nothing in a browser tab.
  */
 export function ServerSwitcher() {
@@ -18,8 +19,8 @@ export function ServerSwitcher() {
   const servers = useDesktopServers();
   if (!api || servers.length === 0) return null;
   const current = currentServerId();
-  const name = servers.find((s) => s.id === current)?.name ?? "This Mac";
-  const local = current === "local";
+  const name = servers.find((s) => s.id === current)?.name ?? LOCAL_SERVER_NAME;
+  const local = current === LOCAL_SERVER_ID;
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
@@ -35,7 +36,7 @@ export function ServerSwitcher() {
           <ChevronsUpDown className="size-3 shrink-0 opacity-60" />
         </Button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="start">
+      <DropdownMenuContent align="start" className="w-44">
         {servers.map((server) => (
           <DropdownMenuItem key={server.id} onSelect={() => api.open(server.id)}>
             <span className="min-w-0 flex-1 truncate">{server.name}</span>
@@ -46,9 +47,10 @@ export function ServerSwitcher() {
           <>
             <DropdownMenuSeparator />
             <DropdownMenuItem
+              className="whitespace-nowrap"
               onSelect={() => window.dispatchEvent(new Event("codeden:manage-servers"))}
             >
-              <Settings2 /> Manage servers...
+              <Settings2 /> Manage servers
             </DropdownMenuItem>
           </>
         )}

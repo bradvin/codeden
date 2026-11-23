@@ -7,6 +7,7 @@ import {
   type DesktopServer,
   type DesktopServerResult,
   LOCAL_SERVER_ID,
+  LOCAL_SERVER_NAME,
   parseTrustedOrigin,
 } from "@codeden/contracts";
 import { z } from "zod";
@@ -53,7 +54,7 @@ export interface ServerStoreOptions {
 }
 
 /**
- * The remote servers the desktop app can open (§17.1). "This Mac" is implicit: always first,
+ * The remote servers the desktop app can open (§17.1). The local server is implicit: always first,
  * never stored, never renamed or removed here. Entries are `{ id, name, url }`; the file is
  * read again on every change so an unreadable entry never costs the others.
  */
@@ -64,8 +65,8 @@ export class ServerStore {
     this.servers = this.read();
   }
 
-  /** This Mac first, then the remote servers in the order they were added. */
-  list(localName = "This Mac"): DesktopServer[] {
+  /** The local server first, then the remote servers in the order they were added. */
+  list(localName: string = LOCAL_SERVER_NAME): DesktopServer[] {
     return [
       { id: LOCAL_SERVER_ID, name: localName, url: null },
       ...this.servers.map((s) => ({ ...s })),
@@ -123,7 +124,7 @@ export class ServerStore {
     return { ok: true, server: { id, name, url: entry.url } };
   }
 
-  /** Drop an entry; the caller clears the partition's session data. False for This Mac or unknown ids. */
+  /** Drop an entry; the caller clears the partition's session data. False for local or unknown ids. */
   remove(id: string): boolean {
     if (!this.get(id)) return false;
     this.servers = this.servers.filter((s) => s.id !== id);

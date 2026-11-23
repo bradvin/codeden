@@ -42,9 +42,9 @@ The desktop app can open a CodeDen server on another machine ([Other CodeDen ser
 
 - **HTTPS only**, to an `https://host[:port]` address validated like a trusted origin; no http, no IP addresses, no way to accept a bad certificate. The app checks `/api/health` without credentials before saving.
 - **The install token never leaves this machine.** The window signs in with the server's own password (trusted-origin rules), and the app polls `/api/activity` with that session's device cookie.
-- **Its own session partition per server**, persistent for the 90-day device session; cookies never cross between servers or into This Mac's window. Removing a server clears that partition.
+- **Its own session partition per server**, persistent for the 90-day device session; cookies never cross between servers or into the local window. Removing a server clears that partition.
 - **Navigation is locked to the server's origin**; other links open in the system browser. Notifications and the microphone are granted only to that origin.
-- **A smaller bridge, checked in the main process** from the sending window and its origin: remote windows can use `notify`, `onNotificationClick`, `setBadge`, `openExternal`, `onNavigate`, `info` and the server list's `list` and `open`. `pickFolder` (it would give the server a path on this Mac), the native session browser calls and changing the server list are refused; their windows get no `browser` API at all.
+- **A smaller bridge, checked in the main process** from the sending window and its origin: remote windows can use `notify`, `onNotificationClick`, `setBadge`, `openExternal`, `onNavigate`, `info` and the server list's `list` and `open`. `pickFolder` (it would give the server a path on this computer), the native session browser calls and changing the server list are refused; their windows get no `browser` API at all.
 
 ## Markdown from agents and GitHub
 

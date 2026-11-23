@@ -8,6 +8,7 @@ import {
   type DesktopUpdateCommand,
   deepLinkPath,
   LOCAL_SERVER_ID,
+  LOCAL_SERVER_NAME,
   parseDeepLink,
 } from "@codeden/contracts";
 import { app, dialog, Menu, Notification, net, session, shell } from "electron";
@@ -595,7 +596,7 @@ export class DesktopApp {
       ownsServer: Boolean(this.conn?.server),
       launchAtLoginSupported,
       nativeBrowser: true,
-      server: { id: LOCAL_SERVER_ID, name: "This Mac", remote: false },
+      server: { id: LOCAL_SERVER_ID, name: LOCAL_SERVER_NAME, remote: false },
     };
   }
 

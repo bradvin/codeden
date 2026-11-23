@@ -233,21 +233,24 @@ export type DesktopInfo = z.infer<typeof DesktopInfo>;
 export const DESKTOP_SERVER_NAME_MAX = 40;
 /** Most remote servers the desktop app lists. */
 export const DESKTOP_SERVERS_MAX = 20;
-/** The id of the server this machine runs ("This Mac"); never stored, never removable. */
+/** The id of the local desktop server, which is always present and never stored or removable. */
 export const LOCAL_SERVER_ID = "local";
 
-/** A server in the desktop app's list: This Mac first (`url` null), then the remote ones. */
+/** Display name of the local server on every desktop platform. */
+export const LOCAL_SERVER_NAME = "local";
+
+/** A server in the desktop app's list: the local server first (`url` null), then the remote ones. */
 export const DesktopServer = z.object({
   id: z.string().min(1).max(40),
   name: z.string().min(1).max(DESKTOP_SERVER_NAME_MAX),
-  /** `https://host[:port]` of a remote server; null for This Mac. */
+  /** `https://host[:port]` of a remote server; null for the local server. */
   url: z.string().nullable(),
   /** Its window is open (shown or hidden in the tray). */
   open: z.boolean().optional(),
 });
 export type DesktopServer = z.infer<typeof DesktopServer>;
 
-/** `servers.add` over the bridge (This Mac's window only). */
+/** `servers.add` over the bridge (local window only). */
 export const DesktopServerAdd = z.object({
   name: z.string().max(200),
   url: z.string().max(300),
@@ -292,14 +295,14 @@ export interface CodedenDesktopApi {
   /**
    * This window shows another CodeDen server (§17.1): known synchronously, from the preload's
    * launch arguments. The UI then behaves as in a browser: no native folder picker or session
-   * browser views. Absent in This Mac's window and in older apps.
+   * browser views. Absent in the local window and in older apps.
    */
   remote?: { id: string };
   /** Other servers (§17.1); absent from older apps. */
   servers?: CodedenDesktopServersApi;
 }
 
-/** The server list. `list` and `open` work in every window; the rest only in This Mac's. */
+/** The server list. `list` and `open` work in every window; the rest only in the local window. */
 export interface CodedenDesktopServersApi {
   list(): Promise<DesktopServer[]>;
   /** Show (or open) a server's window. */
